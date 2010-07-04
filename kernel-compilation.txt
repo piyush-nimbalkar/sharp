@@ -3,5 +3,8 @@ KERNEL COMPILATION
 Step 1 :
 
 Step 2 : 
+<<<<<<< HEAD
 
 Step 3 : 
+=======
+>>>>>>> 6199d65a831442bf5eb86aaa69077be50d089d6d
