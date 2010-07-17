@@ -24,6 +24,7 @@ int init_module(void)
       p->data=i;
     }
   p->next=NULL;
+  printk("Linked List Created. Remove Module to view the Contents.");
   return 0;
 }
 
