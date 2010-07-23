@@ -1,0 +1,1 @@
+cmd_/root/sharp/kernel_modules/module_calc/calc_dev.ko := ld -r -m elf_i386 -T /usr/src/linux-2.6.34/scripts/module-common.lds --build-id -o /root/sharp/kernel_modules/module_calc/calc_dev.ko /root/sharp/kernel_modules/module_calc/calc_dev.o /root/sharp/kernel_modules/module_calc/calc_dev.mod.o
