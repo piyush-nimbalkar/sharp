@@ -57,8 +57,10 @@ main()
   
       ret=ioctl(file_desc,IOCTL_GET_DATA,&output);
       check_err(ret);
-  
-      printf("\nAnswer : %d\n\n",output);
+      if(output==-9999)
+	  printf("Error : Divide by Zero\n");
+      else
+	printf("\nAnswer : %d\n\n",output);
     }
   while(1);
   close(file_desc);

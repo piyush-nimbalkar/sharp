@@ -76,7 +76,10 @@ int device_ioctl(struct inode *inode,struct file *file,unsigned long ioctl_num,u
 
     case IOCTL_DIV_DATA:
       if (ker_data[1]==0)
-	printk("INVALID Operation ");
+	{
+	  printk("INVALID Operation ");
+	  ker_answer=-9999;
+	}
       else
 	{
 	  ker_answer=ker_data[0]/ker_data[1];
