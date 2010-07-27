@@ -1,0 +1,12 @@
+.*
+!.gitignore
+*~
+*.o
+*.ko
+*.order
+*.out
+*.mod.c
+*.symvers
+.markers
+\#*
+*\#
