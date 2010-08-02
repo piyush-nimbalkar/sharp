@@ -1,10 +1,33 @@
-KERNEL COMPILATION 
+KERNEL COMPILATION STEPS
 
-Step 1 :
+1. Download kernel from www.kernel.org using wget
 
-Step 2 : 
-<<<<<<< HEAD
+2. Extract the tar file
+   # tar -xjvf linux-2.6.34.tar.bz2 -C /usr/src
+   # cd /usr/src/linux-2.6.34
 
-Step 3 : 
-=======
->>>>>>> 6199d65a831442bf5eb86aaa69077be50d089d6d
+3. Configure kernel
+   # make menuconfig
+
+4. Compile kernel
+   # make
+
+5. Compile kernel modules
+   # make modules
+
+6. Install kernel modules
+   # make modules_install
+
+7. Install kernel
+   # make install
+
+8. Create initrd image
+   # cd /boot
+   # mkinitramfs -o initrd.img-2.6.34 2.6.34
+
+9. Modify GRUB configuration file
+   # update-grub
+
+10.Reboot into new kernel
+   # reboot
+
