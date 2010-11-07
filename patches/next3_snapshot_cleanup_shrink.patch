@@ -1,0 +1,499 @@
+===next3_snapshot_cleanup_shrink.patch===
+
+next3: snapshot cleanup - shrink deleted snapshots
+
+Free blocks of deleted snapshots, which are not in use by an older
+non-deleted snapshot.  Shrinking helps reclaiming disk space
+while older snapshots are currently in use (enabled).
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:49.064712443 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:48.464707544 +0300
+@@ -531,6 +531,226 @@ static void next3_free_data_cow(handle_t
+ 			    NULL, 0, NULL, NULL)
+ 
+ /**
++ * next3_blks_to_skip - count the number blocks that can be skipped
++ * @inode: inode in question
++ * @i_block: start block number
++ * @maxblocks: max number of data blocks to be skipped
++ * @chain: chain of indirect blocks
++ * @depth: length of chain from inode to data block
++ * @offsets: array of offsets in chain blocks
++ * @k: number of allocated blocks in the chain
++ *
++ * Counts the number of non-allocated data blocks (holes) at offset @i_block.
++ * Called from next3_snapshot_merge_blocks() and next3_snapshot_shrink_blocks()
++ * under snapshot_mutex.
++ * Returns the total number of data blocks to be skipped.
++ */
++static int next3_blks_to_skip(struct inode *inode, long i_block,
++		unsigned long maxblocks, Indirect chain[4], int depth,
++		int *offsets, int k)
++{
++	int ptrs = NEXT3_ADDR_PER_BLOCK(inode->i_sb);
++	int ptrs_bits = NEXT3_ADDR_PER_BLOCK_BITS(inode->i_sb);
++	const long direct_blocks = NEXT3_NDIR_BLOCKS,
++		indirect_blocks = ptrs,
++		double_blocks = (1 << (ptrs_bits * 2));
++	/* number of data blocks mapped with a single splice to the chain */
++	int data_ptrs_bits = ptrs_bits * (depth - k - 1);
++	int max_ptrs = maxblocks >> data_ptrs_bits;
++	int final = 0;
++	unsigned long count = 0;
++
++	switch (depth) {
++	case 4: /* tripple indirect */
++		i_block -= double_blocks;
++		/* fall through */
++	case 3: /* double indirect */
++		i_block -= indirect_blocks;
++		/* fall through */
++	case 2: /* indirect */
++		i_block -= direct_blocks;
++		final = (k == 0 ? 1 : ptrs);
++		break;
++	case 1: /* direct */
++		final = direct_blocks;
++		break;
++	}
++	/* offset of block from start of splice point */
++	i_block &= ((1 << data_ptrs_bits) - 1);
++	/* up to 4 triple indirect blocks are used to map 2^32 blocks */
++	if (next3_snapshot_file(inode) && depth == 4 && k == 0)
++		final = NEXT3_SNAPSHOT_NTIND_BLOCKS;
++
++	count++;
++	while (count <= max_ptrs &&
++		offsets[k] + count < final &&
++		le32_to_cpu(*(chain[k].p + count)) == 0) {
++		count++;
++	}
++	/* number of data blocks mapped by 'count' splice points */
++	count <<= data_ptrs_bits;
++	count -= i_block;
++	return count < maxblocks ? count : maxblocks;
++}
++
++/*
++ * next3_snapshot_shrink_blocks - free unused blocks from deleted snapshot
++ * @handle: JBD handle for this transaction
++ * @inode:	inode we're shrinking
++ * @iblock:	inode offset to first data block to shrink
++ * @maxblocks:	inode range of data blocks to shrink
++ * @cow_bh:	buffer head to map the COW bitmap block
++ *		if NULL, don't look for COW bitmap block
++ * @shrink:	shrink mode: 0 (don't free), >0 (free unused), <0 (free all)
++ * @pmapped:	return no. of mapped blocks or 0 for skipped holes
++ *
++ * Frees @maxblocks blocks starting at offset @iblock in @inode, which are not
++ * 'in-use' by non-deleted snapshots (blocks 'in-use' are set in COW bitmap).
++ * If @shrink is false, just count mapped blocks and look for COW bitmap block.
++ * The first time that a COW bitmap block is found in @inode, whether @inode is
++ * deleted or not, it is stored in @cow_bh and is used in subsequent calls to
++ * this function with other deleted snapshots within the block group boundaries.
++ * Called from next3_snapshot_shrink_blocks() under snapshot_mutex.
++ *
++ * Return values:
++ * >= 0 - no. of shrunk blocks (*@pmapped ? mapped blocks : skipped holes)
++ *  < 0 - error
++ */
++int next3_snapshot_shrink_blocks(handle_t *handle, struct inode *inode,
++		sector_t iblock, unsigned long maxblocks,
++		struct buffer_head *cow_bh,
++		int shrink, int *pmapped)
++{
++	int offsets[4];
++	Indirect chain[4], *partial;
++	int err, blocks_to_boundary, depth, count;
++	struct buffer_head *sbh = NULL;
++	struct next3_group_desc *desc = NULL;
++	next3_snapblk_t block_bitmap, block = SNAPSHOT_BLOCK(iblock);
++	unsigned long block_group = SNAPSHOT_BLOCK_GROUP(block);
++	int mapped_blocks = 0, freed_blocks = 0;
++	const char *cow_bitmap;
++
++	BUG_ON(shrink &&
++		(!(NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_DELETED_FL) ||
++		next3_snapshot_is_active(inode)));
++
++	depth = next3_block_to_path(inode, iblock, offsets,
++			&blocks_to_boundary);
++	if (depth == 0)
++		return -EIO;
++
++	desc = next3_get_group_desc(inode->i_sb, block_group, NULL);
++	if (!desc)
++		return -EIO;
++	block_bitmap = le32_to_cpu(desc->bg_block_bitmap);
++
++	partial = next3_get_branch(inode, depth, offsets, chain, &err);
++	if (err)
++		return err;
++
++	if (partial) {
++		/* block not mapped (hole) - count the number of holes to
++		 * skip */
++		count = next3_blks_to_skip(inode, iblock, maxblocks, chain,
++					   depth, offsets, (partial - chain));
++		snapshot_debug(3, "skipping snapshot (%u) blocks: block=0x%llx"
++			       ", count=0x%x\n", inode->i_generation,
++			       block, count);
++		goto shrink_indirect_blocks;
++	}
++
++	/* data block mapped - check if data blocks should be freed */
++	partial = chain + depth - 1;
++	/* scan all blocks upto maxblocks/boundary */
++	count = 0;
++	while (count < maxblocks && count <= blocks_to_boundary) {
++		next3_fsblk_t blk = le32_to_cpu(*(partial->p + count));
++		if (blk && block + count == block_bitmap &&
++			cow_bh && !buffer_mapped(cow_bh)) {
++			/*
++			 * 'blk' is the COW bitmap physical block -
++			 * store it in cow_bh for subsequent calls
++			 */
++			map_bh(cow_bh, inode->i_sb, blk);
++			set_buffer_new(cow_bh);
++			snapshot_debug(3, "COW bitmap #%lu: snapshot "
++				"(%u), bitmap_blk=(+%lld)\n",
++				block_group, inode->i_generation,
++				SNAPSHOT_BLOCK_GROUP_OFFSET(block_bitmap));
++		}
++		if (blk)
++			/* count mapped blocks in range */
++			mapped_blocks++;
++		else if (shrink >= 0)
++			/*
++			 * Unless we are freeing all block in range,
++			 * we cannot have holes inside mapped range
++			 */
++			break;
++		/* count size of range */
++		count++;
++	}
++
++	if (!shrink)
++		goto done_shrinking;
++
++	cow_bitmap = NULL;
++	if (shrink > 0 && cow_bh && buffer_mapped(cow_bh)) {
++		/* we found COW bitmap - consult it when shrinking */
++		sbh = sb_bread(inode->i_sb, cow_bh->b_blocknr);
++		if (!sbh) {
++			err = -EIO;
++			goto cleanup;
++		}
++		cow_bitmap = sbh->b_data;
++	}
++	if (shrink < 0 || cow_bitmap) {
++		int bit = SNAPSHOT_BLOCK_GROUP_OFFSET(block);
++
++		BUG_ON(bit + count > SNAPSHOT_BLOCKS_PER_GROUP);
++		/* free blocks with or without consulting COW bitmap */
++		next3_free_data_cow(handle, inode, partial->bh,
++				partial->p, partial->p + count,
++				cow_bitmap, bit, &freed_blocks, NULL);
++	}
++
++shrink_indirect_blocks:
++	/* check if the indirect block should be freed */
++	if (shrink && partial == chain + depth - 1) {
++		Indirect *ind = partial - 1;
++		__le32 *p = NULL;
++		if (freed_blocks == mapped_blocks &&
++		    count > blocks_to_boundary) {
++			for (p = (__le32 *)(partial->bh->b_data);
++			     !*p && p < partial->p; p++)
++				;
++		}
++		if (p == partial->p)
++			/* indirect block maps zero data blocks - free it */
++			next3_free_data(handle, inode, ind->bh, ind->p,
++					ind->p+1);
++	}
++
++done_shrinking:
++	snapshot_debug(3, "shrinking snapshot (%u) blocks: shrink=%d, "
++			"block=0x%llx, count=0x%x, mapped=0x%x, freed=0x%x\n",
++			inode->i_generation, shrink, block, count,
++			mapped_blocks, freed_blocks);
++
++	if (pmapped)
++		*pmapped = mapped_blocks;
++	err = count;
++cleanup:
++	while (partial > chain) {
++		brelse(partial->bh);
++		partial--;
++	}
++	brelse(sbh);
++	return err;
++}
++
++/**
+  *	next3_alloc_blocks: multiple allocate blocks needed for a branch
+  *	@indirect_blks: the number of blocks need to allocate for indirect
+  *			blocks
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:21:49.154718888 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:21:48.554777476 +0300
+@@ -1224,6 +1224,216 @@ out_err:
+ 	return err;
+ }
+ 
++/*
++ * next3_snapshot_shrink_range - free unused blocks from deleted snapshots
++ * @handle: JBD handle for this transaction
++ * @start:	latest non-deleted snapshot before deleted snapshots group
++ * @end:	first non-deleted snapshot after deleted snapshots group
++ * @iblock:	inode offset to first data block to shrink
++ * @maxblocks:	inode range of data blocks to shrink
++ * @cow_bh:	buffer head to map the COW bitmap block of snapshot @start
++ *		if NULL, don't look for COW bitmap block
++ *
++ * Shrinks @maxblocks blocks starting at inode offset @iblock in a group of
++ * subsequent deleted snapshots starting after @start and ending before @end.
++ * Shrinking is done by finding a range of mapped blocks in @start snapshot
++ * or in one of the deleted snapshots, where no other blocks are mapped in the
++ * same range in @start snapshot or in snapshots between them.
++ * The blocks in the found range may be 'in-use' by @start snapshot, so only
++ * blocks which are not set in the COW bitmap are freed.
++ * All mapped blocks of other deleted snapshots in the same range are freed.
++ *
++ * Called from next3_snapshot_shrink() under snapshot_mutex.
++ * Returns the shrunk blocks range and <0 on error.
++ */
++static int next3_snapshot_shrink_range(handle_t *handle,
++		struct inode *start, struct inode *end,
++		sector_t iblock, unsigned long maxblocks,
++		struct buffer_head *cow_bh)
++{
++	struct next3_sb_info *sbi = NEXT3_SB(start->i_sb);
++	struct list_head *l;
++	struct inode *inode = start;
++	/* start with @maxblocks range and narrow it down */
++	int err, count = maxblocks;
++	/* @start snapshot blocks should not be freed only counted */
++	int mapped, shrink = 0;
++
++	/* iterate on (@start <= snapshot < @end) */
++	list_for_each_prev(l, &NEXT3_I(start)->i_snaplist) {
++		err = next3_snapshot_shrink_blocks(handle, inode,
++				iblock, count, cow_bh, shrink, &mapped);
++		if (err < 0)
++			return err;
++
++		/* 0 < new range <= old range */
++		BUG_ON(!err || err > count);
++		count = err;
++
++		/*
++		 * shrink mode state transitions:
++		 * 1. on @start, shrink is set to 0 ('don't free' mode).
++		 * 2. after @start, shrink is incremented until mapped blocks
++		 *    are found in the shrunk range ('free unused' mode).
++		 * 3. after mapped block were found, or if cow_bh is NULL,
++		 *    shrink is set to -1 and decremented until the end of
++		 *    the deleted snapshots group ('free all' mode).
++		 */
++		if (shrink < 0)
++			/* stay in 'free all' mode */
++			shrink--;
++		else if (!cow_bh)
++			/* no COW bitmap - enter 'free all' mode */
++			shrink = -1;
++		else if (mapped)
++			/* found mapped blocks - enter 'free all' mode */
++			shrink = -1;
++		else
++			/* enter/stay in 'free unused' mode */
++			shrink++;
++
++		if (l == &sbi->s_snapshot_list)
++			/* didn't reach @end */
++			return -EINVAL;
++		inode = &list_entry(l, struct next3_inode_info,
++						  i_snaplist)->vfs_inode;
++		if (inode == end)
++			break;
++	}
++	return count;
++}
++
++/*
++ * next3_snapshot_shrink - free unused blocks from deleted snapshot files
++ * @handle: JBD handle for this transaction
++ * @start:	latest non-deleted snapshot before deleted snapshots group
++ * @end:	first non-deleted snapshot after deleted snapshots group
++ * @need_shrink: no. of deleted snapshots in the group
++ *
++ * Frees all blocks in subsequent deleted snapshots starting after @start and
++ * ending before @end, except for blocks which are 'in-use' by @start snapshot.
++ * (blocks 'in-use' are set in snapshot COW bitmap and not copied to snapshot).
++ * Called from next3_snapshot_update() under snapshot_mutex.
++ * Returns 0 on success and <0 on error.
++ */
++static int next3_snapshot_shrink(struct inode *start, struct inode *end,
++				 int need_shrink)
++{
++	struct list_head *l;
++	handle_t *handle;
++	struct buffer_head cow_bitmap, *cow_bh = NULL;
++	next3_fsblk_t block = 0;
++	struct next3_sb_info *sbi = NEXT3_SB(start->i_sb);
++	/* blocks beyond the size of @start are not in-use by @start */
++	int snapshot_blocks = SNAPSHOT_BLOCKS(start);
++	unsigned long count = le32_to_cpu(sbi->s_es->s_blocks_count);
++	long block_group = -1;
++	next3_fsblk_t bg_boundary = 0;
++	int err, ret;
++
++	snapshot_debug(3, "snapshot (%u-%u) shrink: "
++			"count = 0x%lx, need_shrink = %d\n",
++			start->i_generation, end->i_generation,
++			count, need_shrink);
++
++	/* start large truncate transaction that will be extended/restarted */
++	handle = next3_journal_start(start, NEXT3_MAX_TRANS_DATA);
++	if (IS_ERR(handle))
++		return PTR_ERR(handle);
++
++	while (count > 0) {
++		while (block >= bg_boundary) {
++			/* sleep 1/block_groups tunable delay unit */
++			snapshot_test_delay_per_ticks(SNAPTEST_DELETE,
++					sbi->s_groups_count);
++			/* reset COW bitmap cache */
++			cow_bitmap.b_state = 0;
++			cow_bitmap.b_blocknr = 0;
++			cow_bh = &cow_bitmap;
++			bg_boundary += SNAPSHOT_BLOCKS_PER_GROUP;
++			block_group++;
++			if (block >= snapshot_blocks)
++				/*
++				 * Past last snapshot block group - pass NULL
++				 * cow_bh to next3_snapshot_shrink_range().
++				 * This will cause snapshots after resize to
++				 * shrink to the size of @start snapshot.
++				 */
++				cow_bh = NULL;
++		}
++
++		err = extend_or_restart_transaction(handle,
++						    NEXT3_MAX_TRANS_DATA);
++		if (err)
++			goto out_err;
++
++		err = next3_snapshot_shrink_range(handle, start, end,
++					      SNAPSHOT_IBLOCK(block), count,
++					      cow_bh);
++
++		snapshot_debug(3, "snapshot (%u-%u) shrink: "
++				"block = 0x%lx, count = 0x%lx, err = 0x%x\n",
++				start->i_generation, end->i_generation,
++				block, count, err);
++
++		if (buffer_mapped(&cow_bitmap) && buffer_new(&cow_bitmap)) {
++			snapshot_debug(2, "snapshot (%u-%u) shrink: "
++				"block group = %ld/%lu, "
++				"COW bitmap = [%lu/%lu]\n",
++				start->i_generation, end->i_generation,
++				block_group, sbi->s_groups_count,
++				SNAPSHOT_BLOCK_TUPLE(cow_bitmap.b_blocknr));
++			clear_buffer_new(&cow_bitmap);
++		}
++
++		if (err <= 0)
++			goto out_err;
++
++		block += err;
++		count -= err;
++	}
++
++	/* marks need_shrink snapshots shrunk */
++	err = extend_or_restart_transaction(handle, need_shrink);
++	if (err)
++		goto out_err;
++
++	/* iterate on (@start < snapshot < @end) */
++	list_for_each_prev(l, &NEXT3_I(start)->i_snaplist) {
++		struct next3_inode_info *ei;
++		struct next3_iloc iloc;
++		if (l == &sbi->s_snapshot_list)
++			break;
++		ei = list_entry(l, struct next3_inode_info, i_snaplist);
++		if (&ei->vfs_inode == end)
++			break;
++		if (ei->i_flags & NEXT3_SNAPFILE_DELETED_FL &&
++			!(ei->i_flags &
++			(NEXT3_SNAPFILE_SHRUNK_FL|NEXT3_SNAPFILE_ACTIVE_FL))) {
++			/* mark snapshot shrunk */
++			err = next3_reserve_inode_write(handle, &ei->vfs_inode,
++							&iloc);
++			ei->i_flags |= NEXT3_SNAPFILE_SHRUNK_FL;
++			if (!err)
++				next3_mark_iloc_dirty(handle, &ei->vfs_inode,
++						      &iloc);
++			if (--need_shrink <= 0)
++				break;
++		}
++	}
++
++	err = 0;
++out_err:
++	ret = next3_journal_stop(handle);
++	if (!err)
++		err = ret;
++	if (need_shrink)
++		snapshot_debug(1, "snapshot (%u-%u) shrink: "
++			       "need_shrink=%d(>0!), err=%d\n",
++			       start->i_generation, end->i_generation,
++			       need_shrink, err);
++	return err;
++}
+ 
+ 
+ /*
+@@ -1251,6 +1461,23 @@ static int next3_snapshot_cleanup(struct
+ 		/* remove permanently unused deleted snapshot */
+ 		return next3_snapshot_remove(inode);
+ 
++	if (deleted) {
++		/* deleted (non-active) snapshot file */
++		if (!(NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_SHRUNK_FL))
++			/* deleted snapshot needs shrinking */
++			(*need_shrink)++;
++		return 0;
++	}
++
++	/* non-deleted (or active) snapshot file */
++	if (*need_shrink) {
++		/* pass 1: shrink all deleted snapshots
++		 * between 'used_by' and 'inode' */
++		err = next3_snapshot_shrink(used_by, inode, *need_shrink);
++		if (err)
++			return err;
++		*need_shrink = 0;
++	}
+ 	return 0;
+ }
+ 
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:21:49.164784125 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:21:48.564775993 +0300
+@@ -362,6 +362,10 @@ extern void next3_free_branches_cow(hand
+ #define next3_free_branches(handle, inode, bh, first, last, depth)	\
+ 	next3_free_branches_cow((handle), (inode), (bh),		\
+ 				(first), (last), (depth), NULL)
++extern int next3_snapshot_shrink_blocks(handle_t *handle, struct inode *inode,
++		sector_t iblock, unsigned long maxblocks,
++		struct buffer_head *cow_bh,
++		int shrink, int *pmapped);
+ 
+ /* super.c */
+ struct kstatfs;
