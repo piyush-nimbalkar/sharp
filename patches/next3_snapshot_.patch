@@ -1,0 +1,544 @@
+next3_snapshot.patch adds snapshot support to Next3 (after it was cloned from Ext3).
+
+The next3_snapshot patch aggregates all next3_snapshot_X sub-patches and next3_snapshot_X_Y sub-sub-patches.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/balloc.c b/fs/next3/balloc.c
+--- a/fs/next3/balloc.c	2010-07-25 11:27:27.439550546 +0300
++++ b/fs/next3/balloc.c	2010-07-26 09:22:10.635116129 +0300
+@@ -134,7 +134,7 @@ err_out:
+  *
+  * Return buffer_head on success or NULL in case of failure.
+  */
+-static struct buffer_head *
++struct buffer_head *
+ read_block_bitmap(struct super_block *sb, unsigned int block_group)
+ {
+ 	struct next3_group_desc * desc;
+@@ -819,7 +819,8 @@ find_next_usable_block(next3_grpblk_t st
+  * zero (failure).
+  */
+ static inline int
+-claim_block(spinlock_t *lock, next3_grpblk_t block, struct buffer_head *bh)
++claim_block(struct super_block *sb, int group, spinlock_t *lock,
++		next3_grpblk_t block, struct buffer_head *bh)
+ {
+ 	struct journal_head *jh = bh2jh(bh);
+ 	int ret;
+@@ -863,9 +864,11 @@ claim_block(spinlock_t *lock, next3_grpb
+  */
+ static next3_grpblk_t
+ next3_try_to_allocate(struct super_block *sb, handle_t *handle, int group,
+-			struct buffer_head *bitmap_bh, next3_grpblk_t grp_goal,
++			struct buffer_head *bitmap_bh,
++			next3_grpblk_t grp_goal,
+ 			unsigned long *count, struct next3_reserve_window *my_rsv)
+ {
++	struct next3_sb_info *sbi = NEXT3_SB(sb);
+ 	next3_fsblk_t group_first_block;
+ 	next3_grpblk_t start, end;
+ 	unsigned long num = 0;
+@@ -913,7 +916,7 @@ repeat:
+ 	}
+ 	start = grp_goal;
+ 
+-	if (!claim_block(sb_bgl_lock(NEXT3_SB(sb), group),
++	if (!claim_block(sb, group, sb_bgl_lock(sbi, group),
+ 		grp_goal, bitmap_bh)) {
+ 		/*
+ 		 * The block was allocated by another thread, or it was
+@@ -929,7 +932,7 @@ repeat:
+ 	grp_goal++;
+ 	while (num < *count && grp_goal < end
+ 		&& next3_test_allocatable(grp_goal, bitmap_bh)
+-		&& claim_block(sb_bgl_lock(NEXT3_SB(sb), group),
++		&& claim_block(sb, group, sb_bgl_lock(sbi, group),
+ 				grp_goal, bitmap_bh)) {
+ 		num++;
+ 		grp_goal++;
+diff -Nuarp a/fs/next3/buffer.c b/fs/next3/buffer.c
+--- a/fs/next3/buffer.c	1970-01-01 02:00:00.000000000 +0200
++++ b/fs/next3/buffer.c	2010-07-26 09:22:10.725116475 +0300
+@@ -0,0 +1,246 @@
++/*
++ *  linux/fs/next3/buffer.c
++ *
++ *  from
++ *
++ *  linux/fs/buffer.c
++ *
++ *  Copyright (C) 1991, 1992, 2002  Linus Torvalds
++ */
++
++/*
++ * Start bdflush() with kernel_thread not syscall - Paul Gortmaker, 12/95
++ *
++ * Removed a lot of unnecessary code and simplified things now that
++ * the buffer cache isn't our primary cache - Andrew Tridgell 12/96
++ *
++ * Speed up hash, lru, and free list operations.  Use gfp() for allocating
++ * hash table, use SLAB cache for buffer heads. SMP threading.  -DaveM
++ *
++ * Added 32k buffer block sizes - these are required older ARM systems. - RMK
++ *
++ * async buffer flushing, 1999 Andrea Arcangeli <andrea@suse.de>
++ */
++
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/fs.h>
++#include <linux/mm.h>
++#include <linux/percpu.h>
++#include <linux/slab.h>
++#include <linux/capability.h>
++#include <linux/blkdev.h>
++#include <linux/file.h>
++#include <linux/quotaops.h>
++#include <linux/highmem.h>
++#include <linux/module.h>
++#include <linux/writeback.h>
++#include <linux/hash.h>
++#include <linux/suspend.h>
++#include <linux/buffer_head.h>
++#include <linux/task_io_accounting_ops.h>
++#include <linux/bio.h>
++#include <linux/notifier.h>
++#include <linux/cpu.h>
++#include <linux/bitops.h>
++#include <linux/mpage.h>
++#include <linux/bit_spinlock.h>
++
++static int quiet_error(struct buffer_head *bh)
++{
++	if (printk_ratelimit())
++		return 0;
++	return 1;
++}
++
++
++static void buffer_io_error(struct buffer_head *bh)
++{
++	char b[BDEVNAME_SIZE];
++	printk(KERN_ERR "Buffer I/O error on device %s, logical block %Lu\n",
++			bdevname(bh->b_bdev, b),
++			(unsigned long long)bh->b_blocknr);
++}
++
++/*
++ * I/O completion handler for next3_read_full_page() - pages
++ * which come unlocked at the end of I/O.
++ */
++static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
++{
++	unsigned long flags;
++	struct buffer_head *first;
++	struct buffer_head *tmp;
++	struct page *page;
++	int page_uptodate = 1;
++
++	BUG_ON(!buffer_async_read(bh));
++
++	page = bh->b_page;
++	if (uptodate) {
++		set_buffer_uptodate(bh);
++	} else {
++		clear_buffer_uptodate(bh);
++		if (!quiet_error(bh))
++			buffer_io_error(bh);
++		SetPageError(page);
++	}
++
++	/*
++	 * Be _very_ careful from here on. Bad things can happen if
++	 * two buffer heads end IO at almost the same time and both
++	 * decide that the page is now completely done.
++	 */
++	first = page_buffers(page);
++	local_irq_save(flags);
++	bit_spin_lock(BH_Uptodate_Lock, &first->b_state);
++	clear_buffer_async_read(bh);
++	unlock_buffer(bh);
++	tmp = bh;
++	do {
++		if (!buffer_uptodate(tmp))
++			page_uptodate = 0;
++		if (buffer_async_read(tmp)) {
++			BUG_ON(!buffer_locked(tmp));
++			goto still_busy;
++		}
++		tmp = tmp->b_this_page;
++	} while (tmp != bh);
++	bit_spin_unlock(BH_Uptodate_Lock, &first->b_state);
++	local_irq_restore(flags);
++
++	/*
++	 * If none of the buffers had errors and they are all
++	 * uptodate then we can set the page uptodate.
++	 */
++	if (page_uptodate && !PageError(page))
++		SetPageUptodate(page);
++	unlock_page(page);
++	return;
++
++still_busy:
++	bit_spin_unlock(BH_Uptodate_Lock, &first->b_state);
++	local_irq_restore(flags);
++	return;
++}
++
++/*
++ * If a page's buffers are under async readin (end_buffer_async_read
++ * completion) then there is a possibility that another thread of
++ * control could lock one of the buffers after it has completed
++ * but while some of the other buffers have not completed.  This
++ * locked buffer would confuse end_buffer_async_read() into not unlocking
++ * the page.  So the absence of BH_Async_Read tells end_buffer_async_read()
++ * that this buffer is not under async I/O.
++ *
++ * The page comes unlocked when it has no locked buffer_async buffers
++ * left.
++ *
++ * PageLocked prevents anyone starting new async I/O reads any of
++ * the buffers.
++ *
++ * PageWriteback is used to prevent simultaneous writeout of the same
++ * page.
++ *
++ * PageLocked prevents anyone from starting writeback of a page which is
++ * under read I/O (PageWriteback is only ever set against a locked page).
++ */
++static void mark_buffer_async_read(struct buffer_head *bh)
++{
++	bh->b_end_io = end_buffer_async_read;
++	set_buffer_async_read(bh);
++}
++
++/*
++ * Generic "read page" function for block devices that have the normal
++ * get_block functionality. This is most of the block device filesystems.
++ * Reads the page asynchronously --- the unlock_buffer() and
++ * set/clear_buffer_uptodate() functions propagate buffer state into the
++ * page struct once IO has completed.
++ */
++int next3_read_full_page(struct page *page, get_block_t *get_block)
++{
++	struct inode *inode = page->mapping->host;
++	sector_t iblock, lblock;
++	struct buffer_head *bh, *head, *arr[MAX_BUF_PER_PAGE];
++	unsigned int blocksize;
++	int nr, i;
++	int fully_mapped = 1;
++
++	BUG_ON(!PageLocked(page));
++	blocksize = 1 << inode->i_blkbits;
++	if (!page_has_buffers(page))
++		create_empty_buffers(page, blocksize, 0);
++	head = page_buffers(page);
++
++	iblock = (sector_t)page->index << (PAGE_CACHE_SHIFT - inode->i_blkbits);
++	lblock = (i_size_read(inode)+blocksize-1) >> inode->i_blkbits;
++	bh = head;
++	nr = 0;
++	i = 0;
++
++	do {
++		if (buffer_uptodate(bh))
++			continue;
++
++		if (!buffer_mapped(bh)) {
++			int err = 0;
++
++			fully_mapped = 0;
++			if (iblock < lblock) {
++				WARN_ON(bh->b_size != blocksize);
++				err = get_block(inode, iblock, bh, 0);
++				if (err)
++					SetPageError(page);
++			}
++			if (!buffer_mapped(bh)) {
++				zero_user(page, i * blocksize, blocksize);
++				if (!err)
++					set_buffer_uptodate(bh);
++				continue;
++			}
++			/*
++			 * get_block() might have updated the buffer
++			 * synchronously
++			 */
++			if (buffer_uptodate(bh))
++				continue;
++		}
++		arr[nr++] = bh;
++	} while (i++, iblock++, (bh = bh->b_this_page) != head);
++
++	if (fully_mapped)
++		SetPageMappedToDisk(page);
++
++	if (!nr) {
++		/*
++		 * All buffers are uptodate - we can set the page uptodate
++		 * as well. But not if get_block() returned an error.
++		 */
++		if (!PageError(page))
++			SetPageUptodate(page);
++		unlock_page(page);
++		return 0;
++	}
++
++	/* Stage two: lock the buffers */
++	for (i = 0; i < nr; i++) {
++		bh = arr[i];
++		lock_buffer(bh);
++		mark_buffer_async_read(bh);
++	}
++
++	/*
++	 * Stage 3: start the IO.  Check for uptodateness
++	 * inside the buffer lock in case another process reading
++	 * the underlying blockdev brought it uptodate (the sct fix).
++	 */
++	for (i = 0; i < nr; i++) {
++		bh = arr[i];
++		if (buffer_uptodate(bh))
++			end_buffer_async_read(bh, 1);
++		else
++			submit_bh(READ, bh);
++	}
++	return 0;
++}
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-25 11:27:27.479699775 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:22:10.655048241 +0300
+@@ -900,6 +900,8 @@ int next3_get_blocks_handle(handle_t *ha
+ 	 */
+ 	err = next3_alloc_branch(handle, inode, indirect_blks, &count, goal,
+ 				offsets + (partial - chain), partial);
++	if (err)
++		goto out_mutex;
+ 
+ 	/*
+ 	 * The next3_splice_branch call will free and forget any buffers
+@@ -911,6 +913,7 @@ int next3_get_blocks_handle(handle_t *ha
+ 	if (!err)
+ 		err = next3_splice_branch(handle, inode, iblock,
+ 					partial, indirect_blks, count);
++out_mutex:
+ 	mutex_unlock(&ei->truncate_mutex);
+ 	if (err)
+ 		goto cleanup;
+@@ -2270,7 +2273,6 @@ static void next3_free_branches(handle_t
+ 			 * revoke records must be emitted *before* clearing
+ 			 * this block's bit in the bitmaps.
+ 			 */
+-			next3_forget(handle, 1, inode, bh, bh->b_blocknr);
+ 
+ 			/*
+ 			 * Everything below this this pointer has been
+@@ -2295,6 +2297,7 @@ static void next3_free_branches(handle_t
+ 				next3_journal_test_restart(handle, inode);
+ 			}
+ 
++			next3_forget(handle, 1, inode, bh, bh->b_blocknr);
+ 			next3_free_blocks(handle, inode, nr, 1);
+ 
+ 			if (parent_bh) {
+@@ -2539,7 +2542,7 @@ out_notrans:
+ 		next3_orphan_del(NULL, inode);
+ }
+ 
+-static next3_fsblk_t next3_get_inode_block(struct super_block *sb,
++next3_fsblk_t next3_get_inode_block(struct super_block *sb,
+ 		unsigned long ino, struct next3_iloc *iloc)
+ {
+ 	unsigned long block_group;
+diff -Nuarp a/fs/next3/Kconfig b/fs/next3/Kconfig
+--- a/fs/next3/Kconfig	2010-07-25 11:27:27.479699775 +0300
++++ b/fs/next3/Kconfig	2010-07-26 09:22:10.615114280 +0300
+@@ -1,6 +1,6 @@
+ config NEXT3_FS
+ 	tristate "Next3 journalling file system support"
+-	select JBD
++	depends on JBD
+ 	help
+ 	  This is the journalling version of the Second extended file system
+ 	  (often called next3), the de facto standard Linux file system
+@@ -65,7 +65,7 @@ config NEXT3_FS_XATTR
+ config NEXT3_FS_POSIX_ACL
+ 	bool "Next3 POSIX Access Control Lists"
+ 	depends on NEXT3_FS_XATTR
+-	select FS_POSIX_ACL
++	depends on FS_POSIX_ACL
+ 	help
+ 	  Posix Access Control Lists (ACLs) support permissions for users and
+ 	  groups beyond the owner/group/world scheme.
+diff -Nuarp a/fs/next3/Makefile b/fs/next3/Makefile
+--- a/fs/next3/Makefile	2010-07-25 11:27:27.479699775 +0300
++++ b/fs/next3/Makefile	2010-07-26 09:22:10.625047974 +0300
+@@ -2,6 +2,13 @@
+ # Makefile for the linux next3-filesystem routines.
+ #
+ 
++# default configuration for standalone module
++CONFIG_NEXT3_FS?=m
++CONFIG_NEXT3_FS_XATTR?=y
++CONFIG_NEXT3_FS_POSIX_ACL?=$(CONFIG_FS_POSIX_ACL)
++CONFIG_NEXT3_FS_SECURITY?=y
++CONFIG_NEXT3_FS_DEBUG?=y
++
+ obj-$(CONFIG_NEXT3_FS) += next3.o
+ 
+ next3-y	:= balloc.o bitmap.o dir.o file.o fsync.o ialloc.o inode.o \
+diff -Nuarp a/fs/next3/next3.h b/fs/next3/next3.h
+--- a/fs/next3/next3.h	2010-07-25 11:27:27.499696339 +0300
++++ b/fs/next3/next3.h	2010-07-26 09:22:10.705046374 +0300
+@@ -385,6 +385,11 @@ struct next3_inode {
+ #define EXT2_FLAGS_UNSIGNED_HASH	0x0002  /* Unsigned dirhash in use */
+ #define EXT2_FLAGS_TEST_FILESYS		0x0004	/* to test development code */
+ 
++#define NEXT3_SET_FLAGS(sb,mask) \
++	NEXT3_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
++#define NEXT3_CLEAR_FLAGS(sb,mask) \
++	NEXT3_SB(sb)->s_es->s_flags &= ~cpu_to_le32(mask)
++
+ /*
+  * Mount flags
+  */
+@@ -537,7 +542,8 @@ struct next3_super_block {
+ 	__u8	s_log_groups_per_flex;  /* FLEX_BG group size */
+ 	__u8	s_reserved_char_pad2;
+ 	__le16  s_reserved_pad;
+-	__u32   s_reserved[162];        /* Padding to the end of the block */
++	__le64	s_kbytes_written;	/* nr of lifetime kilobytes written */
++	__u32   s_reserved[160];        /* Padding to the end of the block */
+ };
+ 
+ #ifdef __KERNEL__
+diff -Nuarp a/fs/next3/next3_jbd.h b/fs/next3/next3_jbd.h
+--- a/fs/next3/next3_jbd.h	2010-07-25 11:27:27.509698786 +0300
++++ b/fs/next3/next3_jbd.h	2010-07-26 09:22:10.715050367 +0300
+@@ -67,6 +67,9 @@
+  * one block, plus two quota updates.  Quota allocations are not
+  * needed. */
+ 
++#define NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, n) \
++	(handle->h_buffer_credits >= (n))
++
+ #define NEXT3_RESERVE_TRANS_BLOCKS	12U
+ 
+ #define NEXT3_INDEX_EXTRA_TRANS_BLOCKS	8
+@@ -152,13 +155,14 @@ int __next3_journal_dirty_metadata(const
+ int next3_journal_dirty_data(handle_t *handle, struct buffer_head *bh);
+ 
+ handle_t *next3_journal_start_sb(struct super_block *sb, int nblocks);
+-int __next3_journal_stop(const char *where, handle_t *handle);
+ 
+ static inline handle_t *next3_journal_start(struct inode *inode, int nblocks)
+ {
+ 	return next3_journal_start_sb(inode->i_sb, nblocks);
+ }
+ 
++int __next3_journal_stop(const char *where, handle_t *handle);
++
+ #define next3_journal_stop(handle) \
+ 	__next3_journal_stop(__func__, (handle))
+ 
+@@ -167,16 +171,27 @@ static inline handle_t *next3_journal_cu
+ 	return journal_current_handle();
+ }
+ 
+-static inline int next3_journal_extend(handle_t *handle, int nblocks)
++static inline int __next3_journal_extend(const char *where,
++		handle_t *handle, int nblocks)
+ {
+ 	return journal_extend(handle, nblocks);
+ }
+ 
+-static inline int next3_journal_restart(handle_t *handle, int nblocks)
++static inline int __next3_journal_restart(const char *where,
++		handle_t *handle, int nblocks)
+ {
+ 	return journal_restart(handle, nblocks);
+ }
+ 
++#define next3_journal_extend(handle, nblocks) \
++	__next3_journal_extend(__func__, 	\
++			(handle), (nblocks))
++
++#define next3_journal_restart(handle, nblocks) \
++	__next3_journal_restart(__func__, 	\
++			(handle), (nblocks))
++
++
+ static inline int next3_journal_blocks_per_page(struct inode *inode)
+ {
+ 	return journal_blocks_per_page(inode);
+diff -Nuarp a/fs/next3/resize.c b/fs/next3/resize.c
+--- a/fs/next3/resize.c	2010-07-25 11:27:27.519700672 +0300
++++ b/fs/next3/resize.c	2010-07-26 09:22:10.675047615 +0300
+@@ -193,6 +193,7 @@ static int setup_new_group_blocks(struct
+ {
+ 	struct next3_sb_info *sbi = NEXT3_SB(sb);
+ 	next3_fsblk_t start = next3_group_first_block_no(sb, input->group);
++	next3_fsblk_t itend = input->inode_table + sbi->s_itb_per_group;
+ 	int reserved_gdb = next3_bg_has_super(sb, input->group) ?
+ 		le16_to_cpu(sbi->s_es->s_reserved_gdt_blocks) : 0;
+ 	unsigned long gdblocks = next3_bg_num_gdb(sb, input->group);
+@@ -281,8 +282,8 @@ static int setup_new_group_blocks(struct
+ 	next3_set_bit(input->inode_bitmap - start, bh->b_data);
+ 
+ 	/* Zero out all of the inode table blocks */
+-	for (i = 0, block = input->inode_table, bit = block - start;
+-	     i < sbi->s_itb_per_group; i++, bit++, block++) {
++	for (block = input->inode_table, bit = block - start;
++	     block < itend; bit++, block++) {
+ 		struct buffer_head *it;
+ 
+ 		next3_debug("clear inode block %#04lx (+%d)\n", block, bit);
+@@ -693,9 +694,14 @@ static void update_backups(struct super_
+ 		struct buffer_head *bh;
+ 
+ 		/* Out of journal space, and can't get more - abort - so sad */
+-		if (handle->h_buffer_credits == 0 &&
+-		    next3_journal_extend(handle, NEXT3_MAX_TRANS_DATA) &&
+-		    (err = next3_journal_restart(handle, NEXT3_MAX_TRANS_DATA)))
++		int buffer_credits = handle->h_buffer_credits;
++		if (buffer_credits == 0)
++			err = next3_journal_extend(handle,
++					NEXT3_MAX_TRANS_DATA);
++		if (err)
++			err = next3_journal_restart(handle,
++					NEXT3_MAX_TRANS_DATA);
++		if (err)
+ 			break;
+ 
+ 		bh = sb_getblk(sb, group * bpg + blk_off);
+diff -Nuarp a/fs/next3/super.c b/fs/next3/super.c
+--- a/fs/next3/super.c	2010-07-25 11:27:27.539698596 +0300
++++ b/fs/next3/super.c	2010-07-26 09:22:10.685048898 +0300
+@@ -21,6 +21,7 @@
+ #include <linux/fs.h>
+ #include <linux/time.h>
+ #include <linux/jbd.h>
++#include <linux/vmalloc.h>
+ #include "next3.h"
+ #include "next3_jbd.h"
+ #include <linux/slab.h>
+@@ -79,6 +80,7 @@ static int next3_freeze(struct super_blo
+  */
+ handle_t *next3_journal_start_sb(struct super_block *sb, int nblocks)
+ {
++	const char *where = __func__;
+ 	journal_t *journal;
+ 
+ 	if (sb->s_flags & MS_RDONLY)
+@@ -89,7 +91,7 @@ handle_t *next3_journal_start_sb(struct 
+ 	 * take the FS itself readonly cleanly. */
+ 	journal = NEXT3_SB(sb)->s_journal;
+ 	if (is_journal_aborted(journal)) {
+-		next3_abort(sb, __func__,
++		next3_abort(sb, where,
+ 			   "Detected aborted journal");
+ 		return ERR_PTR(-EROFS);
+ 	}
