@@ -1,0 +1,369 @@
+===next3_snapshot_block_cow.patch===
+
+next3: snapshot block operation - copy blocks to snapshot
+
+Implementation of copying blocks into a snapshot file.
+This mechanism is used to copy-on-write metadata blocks to snapshot.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:22:03.485005787 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:22:02.944929508 +0300
+@@ -920,7 +920,17 @@ int next3_get_blocks_handle(handle_t *ha
+ 	if (!create || err == -EIO)
+ 		goto cleanup;
+ 
+-	mutex_lock(&ei->truncate_mutex);
++	/*
++	 * locking order for locks validator:
++	 * inode (VFS operation) -> active snapshot (COW operation)
++	 *
++	 * The active snapshot truncate_mutex is only taken during COW
++	 * operation, because snapshot file has read-only aops and because
++	 * truncate/unlink of snapshot file is not permitted.
++	 */
++	BUG_ON(next3_snapshot_is_active(inode) && !IS_COWING(handle));
++	BUG_ON(!next3_snapshot_is_active(inode) && IS_COWING(handle));
++	mutex_lock_nested(&ei->truncate_mutex, IS_COWING(handle));
+ 
+ 	/*
+ 	 * If the indirect block is missing while we are reading
+@@ -1146,6 +1156,14 @@ struct buffer_head *next3_getblk(handle_
+ 			J_ASSERT(create != 0);
+ 			J_ASSERT(handle != NULL);
+ 
++			if (SNAPMAP_ISCOW(create)) {
++				/* COWing block or creating COW bitmap */
++				lock_buffer(bh);
++				clear_buffer_uptodate(bh);
++				/* flag locked buffer and return */
++				*errp = 1;
++				return bh;
++			}
+ 			/*
+ 			 * Now that we do not always journal data, we should
+ 			 * keep in mind whether this should always journal the
+diff -Nuarp a/fs/next3/resize.c b/fs/next3/resize.c
+--- a/fs/next3/resize.c	2010-07-26 09:22:03.515003050 +0300
++++ b/fs/next3/resize.c	2010-07-26 09:22:02.974995865 +0300
+@@ -708,6 +708,14 @@ static void update_backups(struct super_
+ 		if (err)
+ 			break;
+ 
++		if (next3_snapshot_has_active(sb))
++			/*
++			 * test_and_cow() expects an uptodate buffer.
++			 * Read the buffer here to suppress the
++			 * "non uptodate buffer" warning.
++			 */
++			bh = sb_bread(sb, group * bpg + blk_off);
++		else
+ 		bh = sb_getblk(sb, group * bpg + blk_off);
+ 		if (!bh) {
+ 			err = -EIO;
+diff -Nuarp a/fs/next3/snapshot.c b/fs/next3/snapshot.c
+--- a/fs/next3/snapshot.c	2010-07-26 09:22:03.565014560 +0300
++++ b/fs/next3/snapshot.c	2010-07-26 09:22:03.025001090 +0300
+@@ -125,3 +125,278 @@ int next3_snapshot_get_inode_access(hand
+ 	return next3_snapshot_is_active(inode) ? 1 : 0;
+ }
+ 
++/*
++ * COW helper functions
++ */
++
++/*
++ * copy buffer @bh to (locked) snapshot buffer @sbh and mark it uptodate
++ */
++static inline void
++__next3_snapshot_copy_buffer(struct buffer_head *sbh,
++		struct buffer_head *bh)
++{
++	memcpy(sbh->b_data, bh->b_data, SNAPSHOT_BLOCK_SIZE);
++	set_buffer_uptodate(sbh);
++}
++
++
++/*
++ * next3_snapshot_complete_cow()
++ * Unlock a newly COWed snapshot buffer and complete the COW operation.
++ * Optionally, sync the buffer to disk or add it to the current transaction
++ * as dirty data.
++ */
++static inline int
++next3_snapshot_complete_cow(handle_t *handle,
++		struct buffer_head *sbh, struct buffer_head *bh, int sync)
++{
++	int err = 0;
++
++	unlock_buffer(sbh);
++	if (handle) {
++		err = next3_journal_dirty_data(handle, sbh);
++		if (err)
++			goto out;
++	}
++	mark_buffer_dirty(sbh);
++	if (sync)
++		sync_dirty_buffer(sbh);
++
++out:
++	return err;
++}
++
++/*
++ * next3_snapshot_copy_buffer_cow()
++ * helper function for next3_snapshot_test_and_cow()
++ * copy COWed buffer to new allocated (locked) snapshot buffer
++ * add complete the COW operation
++ */
++static inline int
++next3_snapshot_copy_buffer_cow(handle_t *handle,
++				   struct buffer_head *sbh,
++				   struct buffer_head *bh)
++{
++	__next3_snapshot_copy_buffer(sbh, bh);
++	return next3_snapshot_complete_cow(handle, sbh, bh, 0);
++}
++
++/*
++ * next3_snapshot_copy_buffer()
++ * helper function for next3_snapshot_take()
++ * used for initializing pre-allocated snapshot blocks
++ * copy buffer to snapshot buffer and sync to disk
++ * 'mask' block bitmap with exclude bitmap before copying to snapshot.
++ */
++void next3_snapshot_copy_buffer(struct buffer_head *sbh,
++		struct buffer_head *bh, const char *mask)
++{
++	lock_buffer(sbh);
++	__next3_snapshot_copy_buffer(sbh, bh);
++	unlock_buffer(sbh);
++	mark_buffer_dirty(sbh);
++	sync_dirty_buffer(sbh);
++}
++
++
++
++
++/*
++ * COW functions
++ */
++
++#ifdef CONFIG_NEXT3_FS_DEBUG
++static void
++__next3_snapshot_trace_cow(const char *where, handle_t *handle,
++		struct super_block *sb, struct inode *inode,
++		struct buffer_head *bh, next3_fsblk_t block, int cmd)
++{
++	unsigned long inode_group = 0;
++	next3_grpblk_t inode_offset = 0;
++
++	if (inode) {
++		inode_group = (inode->i_ino - 1) /
++			NEXT3_INODES_PER_GROUP(sb);
++		inode_offset = (inode->i_ino - 1) %
++			NEXT3_INODES_PER_GROUP(sb);
++	}
++	snapshot_debug_hl(4, "%s(i:%d/%ld, b:%lu/%lu)"
++			" h_ref=%d, cmd=%d\n",
++			where, inode_offset, inode_group,
++			SNAPSHOT_BLOCK_GROUP_OFFSET(block),
++			SNAPSHOT_BLOCK_GROUP(block),
++			handle->h_ref, cmd);
++}
++
++#define next3_snapshot_trace_cow(where, handle, sb, inode, bh, block, cmd) \
++	if (snapshot_enable_debug >= 4)					\
++		__next3_snapshot_trace_cow(where, handle, sb, inode,	\
++				bh, block, cmd)
++#else
++#define next3_snapshot_trace_cow(where, handle, sb, inode, bh, block, cmd)
++#endif
++
++
++/*
++ * Begin COW or move operation.
++ * No locks needed here, because @handle is a per-task struct.
++ */
++static inline void next3_snapshot_cow_begin(handle_t *handle)
++{
++	snapshot_debug_hl(4, "{\n");
++	IS_COWING(handle) = 1;
++}
++
++/*
++ * End COW or move operation.
++ * No locks needed here, because @handle is a per-task struct.
++ */
++static inline void next3_snapshot_cow_end(const char *where,
++		handle_t *handle, next3_fsblk_t block, int err)
++{
++	IS_COWING(handle) = 0;
++	snapshot_debug_hl(4, "} = %d\n", err);
++	snapshot_debug_hl(4, ".\n");
++	if (err < 0)
++		snapshot_debug(1, "%s(b:%lu/%lu) failed!"
++				" h_ref=%d, err=%d\n", where,
++				SNAPSHOT_BLOCK_GROUP_OFFSET(block),
++				SNAPSHOT_BLOCK_GROUP(block),
++				handle->h_ref, err);
++}
++
++/*
++ * next3_snapshot_test_and_cow - COW metadata block
++ * @where:	name of caller function
++ * @handle:	JBD handle
++ * @inode:	owner of blocks (NULL for global metadata blocks)
++ * @bh:		buffer head of metadata block
++ * @cow:	if false, return -EIO if block needs to be COWed
++ *
++ * Return values:
++ * = 0 - @block was COWed or doesn't need to be COWed
++ * < 0 - error
++ */
++int next3_snapshot_test_and_cow(const char *where, handle_t *handle,
++		struct inode *inode, struct buffer_head *bh, int cow)
++{
++	struct super_block *sb = handle->h_transaction->t_journal->j_private;
++	struct inode *active_snapshot = next3_snapshot_has_active(sb);
++	struct buffer_head *sbh = NULL;
++	next3_fsblk_t block = bh->b_blocknr, blk = 0;
++	int err = 0, clear = 0;
++
++	if (!active_snapshot)
++		/* no active snapshot - no need to COW */
++		return 0;
++
++	next3_snapshot_trace_cow(where, handle, sb, inode, bh, block, cow);
++
++	if (IS_COWING(handle)) {
++		/* avoid recursion on active snapshot updates */
++		WARN_ON(inode && inode != active_snapshot);
++		snapshot_debug_hl(4, "active snapshot update - "
++				  "skip block cow!\n");
++		return 0;
++	} else if (inode == active_snapshot) {
++		/* active snapshot may only be modified during COW */
++		snapshot_debug_hl(4, "active snapshot access denied!\n");
++		return -EPERM;
++	}
++
++
++	/* BEGIN COWing */
++	next3_snapshot_cow_begin(handle);
++
++	if (inode)
++		clear = next3_snapshot_excluded(inode);
++	if (clear < 0) {
++		/*
++		 * excluded file block access - don't COW and
++		 * mark block in exclude bitmap
++		 */
++		snapshot_debug_hl(4, "file (%lu) excluded from snapshot - "
++				"mark block (%lu) in exclude bitmap\n",
++				inode->i_ino, block);
++		cow = 0;
++	}
++
++	if (clear < 0)
++		goto cowed;
++	if (!err) {
++		trace_cow_inc(handle, ok_bitmap);
++		goto cowed;
++	}
++
++	/* block is in use by snapshot - check if it is mapped */
++	err = next3_snapshot_map_blocks(handle, active_snapshot, block, 1, &blk,
++					SNAPMAP_READ);
++	if (err < 0)
++		goto out;
++	if (err > 0) {
++		sbh = sb_find_get_block(sb, blk);
++		trace_cow_inc(handle, ok_mapped);
++		err = 0;
++		goto test_pending_cow;
++	}
++
++	/* block needs to be COWed */
++	err = -EIO;
++	if (!cow)
++		/* don't COW - we were just checking */
++		goto out;
++
++	/* make sure we hold an uptodate source buffer */
++	if (!bh || !buffer_mapped(bh))
++		goto out;
++	if (!buffer_uptodate(bh)) {
++		snapshot_debug(1, "warning: non uptodate buffer (%lu)"
++				" needs to be copied to active snapshot!\n",
++				block);
++		ll_rw_block(READ, 1, &bh);
++		wait_on_buffer(bh);
++		if (!buffer_uptodate(bh))
++			goto out;
++	}
++
++	/* try to allocate snapshot block to make a backup copy */
++	sbh = next3_getblk(handle, active_snapshot, SNAPSHOT_IBLOCK(block),
++			   SNAPMAP_COW, &err);
++	if (!sbh || err < 0)
++		goto out;
++
++	blk = sbh->b_blocknr;
++	if (!err) {
++		/*
++		 * we didn't allocate this block -
++		 * another COWing task must have allocated it
++		 */
++		trace_cow_inc(handle, ok_mapped);
++		goto test_pending_cow;
++	}
++
++	/*
++	 * we allocated this block -
++	 * copy block data to snapshot and complete COW operation
++	 */
++	err = next3_snapshot_copy_buffer_cow(handle, sbh, bh);
++	if (err)
++		goto out;
++	snapshot_debug(3, "block [%lu/%lu] of snapshot (%u) "
++			"mapped to block [%lu/%lu]\n",
++			SNAPSHOT_BLOCK_TUPLE(block),
++			active_snapshot->i_generation,
++			SNAPSHOT_BLOCK_TUPLE(sbh->b_blocknr));
++
++	trace_cow_inc(handle, copied);
++test_pending_cow:
++
++cowed:
++out:
++	brelse(sbh);
++	/* END COWing */
++	next3_snapshot_cow_end(where, handle, block, err);
++	return err;
++}
++
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:22:03.584938967 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:22:03.044996705 +0300
+@@ -135,7 +135,17 @@ extern void next3_snapshot_copy_buffer(s
+ extern int next3_snapshot_read_block_bitmap(struct super_block *sb,
+ 		unsigned int block_group, struct buffer_head *bitmap_bh);
+ 
+-#define next3_snapshot_cow(handle, inode, bh, cow) 0
++extern int next3_snapshot_test_and_cow(const char *where,
++		handle_t *handle, struct inode *inode,
++		struct buffer_head *bh, int cow);
++
++/*
++ * test if a metadata block should be COWed
++ * and if it should, copy the block to the active snapshot
++ */
++#define next3_snapshot_cow(handle, inode, bh, cow)		\
++	next3_snapshot_test_and_cow(__func__, handle, inode,	\
++			bh, cow)
+ 
+ #define next3_snapshot_move(handle, inode, block, num, move) (num)
+ 

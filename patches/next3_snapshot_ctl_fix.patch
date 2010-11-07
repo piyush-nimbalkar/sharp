@@ -1,0 +1,139 @@
+===next3_snapshot_ctl_fix.patch===
+
+next3: snapshot control - fix new snapshot
+
+On snapshot take, after copying the pre-allocated blocks, some are
+fixed to make the snapshot image appear as a valid Ext2 file system.
+The has_journal and has_snapshot flags are cleared from the super
+block as well as the journal inode and last snapshot inode fields.
+All snapshot inodes are cleared (to appear as empty inodes).
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:22:00.964900702 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:22:00.434959879 +0300
+@@ -361,6 +361,7 @@ static int next3_snapshot_create(struct 
+ 	unsigned long ino;
+ 	struct next3_iloc iloc;
+ 	next3_fsblk_t bmap_blk = 0, imap_blk = 0, inode_blk = 0;
++	next3_fsblk_t prev_inode_blk = 0;
+ 	loff_t snapshot_blocks = le32_to_cpu(sbi->s_es->s_blocks_count);
+ 	if (active_snapshot) {
+ 		snapshot_debug(1, "failed to add snapshot because active "
+@@ -516,7 +517,9 @@ static int next3_snapshot_create(struct 
+ 		goto out_handle;
+ 	}
+ 
+-	ino = inode->i_ino;
++	/* start with root inode and continue with snapshot list */
++	ino = NEXT3_ROOT_INO;
++alloc_inode_blocks:
+ 	/*
+ 	 * pre-allocate the following blocks in the new snapshot:
+ 	 * - block and inode bitmap blocks of ino's block group
+@@ -529,6 +532,11 @@ static int next3_snapshot_create(struct 
+ 
+ 	iloc.block_group = 0;
+ 	inode_blk = next3_get_inode_block(sb, ino, &iloc);
++	if (!inode_blk || inode_blk == prev_inode_blk)
++		goto next_snapshot;
++
++	/* not same inode and bitmap blocks as prev snapshot */
++	prev_inode_blk = inode_blk;
+ 	bmap_blk = 0;
+ 	imap_blk = 0;
+ 	desc = next3_get_group_desc(sb, iloc.block_group, NULL);
+@@ -577,6 +585,10 @@ next_snapshot:
+ 			err = -EIO;
+ 		goto out_handle;
+ 	}
++	if (ino == NEXT3_ROOT_INO) {
++		ino = inode->i_ino;
++		goto alloc_inode_blocks;
++	}
+ 
+ 	snapshot_debug(1, "snapshot (%u) created\n", inode->i_generation);
+ 	err = 0;
+@@ -677,6 +689,8 @@ int next3_snapshot_take(struct inode *in
+ 	struct inode *curr_inode;
+ 	struct next3_iloc iloc;
+ 	struct next3_group_desc *desc;
++	next3_fsblk_t prev_inode_blk = 0;
++	struct next3_inode *raw_inode;
+ 	int i;
+ 	int err = -EIO;
+ 
+@@ -729,6 +743,16 @@ int next3_snapshot_take(struct inode *in
+ 	 */
+ 	lock_buffer(sbh);
+ 	memcpy(sbh->b_data, sbi->s_sbh->b_data, sb->s_blocksize);
++	/*
++	 * Convert from Next3 to Ext3 super block:
++	 * Remove the HAS_SNAPSHOT flag and snapshot inode number.
++	 * Set the IS_SNAPSHOT flag to signal fsck this is a snapshot image.
++	 */
++	es->s_feature_ro_compat &=
++		~cpu_to_le32(NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
++	es->s_snapshot_inum = 0;
++	es->s_snapshot_list = 0;
++	es->s_flags |= cpu_to_le32(NEXT3_FLAGS_IS_SNAPSHOT);
+ 	set_buffer_uptodate(sbh);
+ 	unlock_buffer(sbh);
+ 	mark_buffer_dirty(sbh);
+@@ -746,7 +770,9 @@ int next3_snapshot_take(struct inode *in
+ 			goto out_unlockfs;
+ 	}
+ 
+-	curr_inode = inode;
++	/* start with root inode and continue with snapshot list */
++	curr_inode = sb->s_root->d_inode;
++copy_inode_blocks:
+ 	/*
+ 	 * copy the following blocks to the new snapshot:
+ 	 * - block and inode bitmap blocks of curr_inode block group
+@@ -761,6 +787,9 @@ int next3_snapshot_take(struct inode *in
+ 		err = err ? : -EIO;
+ 		goto out_unlockfs;
+ 	}
++	if (iloc.bh->b_blocknr == prev_inode_blk)
++		goto fix_inode_copy;
++	prev_inode_blk = iloc.bh->b_blocknr;
+ 	for (i = 0; i < COPY_INODE_BLOCKS_NUM; i++)
+ 		brelse(bhs[i]);
+ 	bhs[COPY_BLOCK_BITMAP] = sb_bread(sb,
+@@ -777,6 +806,33 @@ int next3_snapshot_take(struct inode *in
+ 			goto out_unlockfs;
+ 		mask = NULL;
+ 	}
++fix_inode_copy:
++	/* get snapshot copy of raw inode */
++	iloc.bh = sbh;
++	raw_inode = next3_raw_inode(&iloc);
++	if (curr_inode->i_ino != NEXT3_ROOT_INO) {
++		/*
++		 * Snapshot inode blocks are excluded from COW bitmap,
++		 * so they appear to be not allocated in the snapshot's
++		 * block bitmap.  If we want the snapshot image to pass
++		 * fsck with no errors, we need to detach those blocks
++		 * from the copy of the snapshot inode, so we fix the
++		 * snapshot inodes to appear as empty regular files.
++		 */
++		raw_inode->i_size = 0;
++		raw_inode->i_size_high = 0;
++		raw_inode->i_blocks_lo = 0;
++		raw_inode->i_blocks_high = 0;
++		raw_inode->i_flags &= ~NEXT3_FL_SNAPSHOT_MASK;
++		memset(raw_inode->i_block, 0, sizeof(raw_inode->i_block));
++	}
++	mark_buffer_dirty(sbh);
++	sync_dirty_buffer(sbh);
++
++	if (curr_inode->i_ino == NEXT3_ROOT_INO) {
++		curr_inode = inode;
++		goto copy_inode_blocks;
++	}
+ 
+ 	/* reset COW bitmap cache */
+ 	err = next3_snapshot_reset_bitmap_cache(sb, 0);
