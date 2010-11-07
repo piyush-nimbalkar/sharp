@@ -1,0 +1,288 @@
+===next3_snapshot_journal_error.patch===
+
+next3: snapshot journaled - record errors in journal
+
+Next3 error state is recorded in the journal super block and error
+messages are recorder in free space after the journal super block.
+Next3 should be mounted with errors=remount-ro.
+After a snapshot error, the file system will be in read-only mode.
+The administrator must un-mount the file system and run fsck
+to prevent data corruption.
+Some places in Ext3 original code don't check for return value of
+JBD functions.  Check for snapshot/journal errors in those places.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/balloc.c b/fs/next3/balloc.c
+--- a/fs/next3/balloc.c	2010-07-26 09:21:58.744866219 +0300
++++ b/fs/next3/balloc.c	2010-07-26 09:21:58.144853233 +0300
+@@ -658,7 +658,9 @@ do_more:
+ 
+ 	/* We dirtied the bitmap block */
+ 	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
+-	err = next3_journal_dirty_metadata(handle, bitmap_bh);
++	ret = next3_journal_dirty_metadata(handle, bitmap_bh);
++	if (!err)
++		err = ret;
+ 
+ 	/* And the group descriptor block */
+ 	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:58.774865668 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:58.174855104 +0300
+@@ -2345,6 +2345,9 @@ static void next3_clear_blocks(handle_t 
+ 		if (bh) {
+ 			BUFFER_TRACE(bh, "retaking write access");
+ 			next3_journal_get_write_access_inode(handle, inode, bh);
++			/* we may have lost write_access on bh */
++			if (is_handle_aborted(handle))
++				return;
+ 		}
+ 	}
+ 
+@@ -2427,6 +2430,9 @@ static void next3_free_data(handle_t *ha
+ 				next3_clear_blocks(handle, inode, this_bh,
+ 						  block_to_free,
+ 						  count, block_to_free_p, p);
++				/* we may have lost write_access on this_bh */
++				if (is_handle_aborted(handle))
++					return;
+ 				block_to_free = nr;
+ 				block_to_free_p = p;
+ 				count = 1;
+@@ -2437,6 +2443,9 @@ static void next3_free_data(handle_t *ha
+ 	if (count > 0)
+ 		next3_clear_blocks(handle, inode, this_bh, block_to_free,
+ 				  count, block_to_free_p, p);
++	/* we may have lost write_access on this_bh */
++	if (is_handle_aborted(handle))
++		return;
+ 
+ 	if (this_bh) {
+ 		BUFFER_TRACE(this_bh, "call next3_journal_dirty_metadata");
+diff -Nuarp a/fs/next3/namei.c b/fs/next3/namei.c
+--- a/fs/next3/namei.c	2010-07-26 09:21:58.784867224 +0300
++++ b/fs/next3/namei.c	2010-07-26 09:21:58.184856888 +0300
+@@ -1649,8 +1649,12 @@ static int next3_delete_entry (handle_t 
+ 		if (!next3_check_dir_entry("next3_delete_entry", dir, de, bh, i))
+ 			return -EIO;
+ 		if (de == de_del)  {
++			int err;
++
+ 			BUFFER_TRACE(bh, "get_write_access");
+-			next3_journal_get_write_access(handle, bh);
++			err = next3_journal_get_write_access(handle, bh);
++			if (err)
++				return err;
+ 			if (pde)
+ 				pde->rec_len = next3_rec_len_to_disk(
+ 					next3_rec_len_from_disk(pde->rec_len) +
+@@ -1797,7 +1801,16 @@ retry:
+ 		goto out_stop;
+ 	}
+ 	BUFFER_TRACE(dir_block, "get_write_access");
+-	next3_journal_get_write_access(handle, dir_block);
++	err = next3_journal_get_write_access(handle, dir_block);
++	if (err) {
++		drop_nlink(inode); /* is this nlink == 0? */
++		unlock_new_inode(inode);
++		/* no need to check for errors - we failed anyway */
++		(void) next3_mark_inode_dirty(handle, inode);
++		iput(inode);
++		brelse(dir_block);
++		goto out_stop;
++	}
+ 	de = (struct next3_dir_entry_2 *) dir_block->b_data;
+ 	de->inode = cpu_to_le32(inode->i_ino);
+ 	de->name_len = 1;
+@@ -2339,6 +2352,10 @@ static int next3_rename (struct inode * 
+ 		if (!new_inode && new_dir!=old_dir &&
+ 				new_dir->i_nlink >= NEXT3_LINK_MAX)
+ 			goto end_rename;
++		BUFFER_TRACE(dir_bh, "get_write_access");
++		retval = next3_journal_get_write_access(handle, dir_bh);
++		if (retval)
++			goto end_rename;
+ 	}
+ 	if (!new_bh) {
+ 		retval = next3_add_entry (handle, new_dentry, old_inode);
+@@ -2346,7 +2363,9 @@ static int next3_rename (struct inode * 
+ 			goto end_rename;
+ 	} else {
+ 		BUFFER_TRACE(new_bh, "get write access");
+-		next3_journal_get_write_access(handle, new_bh);
++		retval = next3_journal_get_write_access(handle, new_bh);
++		if (retval)
++			goto end_rename;
+ 		new_de->inode = cpu_to_le32(old_inode->i_ino);
+ 		if (NEXT3_HAS_INCOMPAT_FEATURE(new_dir->i_sb,
+ 					      NEXT3_FEATURE_INCOMPAT_FILETYPE))
+@@ -2403,8 +2422,6 @@ static int next3_rename (struct inode * 
+ 	old_dir->i_ctime = old_dir->i_mtime = CURRENT_TIME_SEC;
+ 	next3_update_dx_flag(old_dir);
+ 	if (dir_bh) {
+-		BUFFER_TRACE(dir_bh, "get_write_access");
+-		next3_journal_get_write_access(handle, dir_bh);
+ 		PARENT_INO(dir_bh->b_data) = cpu_to_le32(new_dir->i_ino);
+ 		BUFFER_TRACE(dir_bh, "call next3_journal_dirty_metadata");
+ 		next3_journal_dirty_metadata(handle, dir_bh);
+diff -Nuarp a/fs/next3/super.c b/fs/next3/super.c
+--- a/fs/next3/super.c	2010-07-26 09:21:58.804865879 +0300
++++ b/fs/next3/super.c	2010-07-26 09:21:58.204857037 +0300
+@@ -126,9 +126,52 @@ int __next3_journal_stop(const char *whe
+ 	return err;
+ }
+ 
++/* record error messages after journal super block */
++static void next3_record_journal_err(struct super_block *sb, const char *where,
++		const char *function, const char *fmt, va_list args)
++{
++#define MSGLEN 256
++	journal_t *journal = NEXT3_SB(sb)->s_journal;
++	char *buf;
++	unsigned long offset;
++	int len;
++	
++	if (!journal)
++		return;
++
++	buf = (char *)journal->j_superblock;
++	offset = (unsigned long)buf % sb->s_blocksize;
++	buf += sizeof(journal_superblock_t);
++	offset += sizeof(journal_superblock_t);
++
++	/* seek to end of message buffer */
++	while (offset < sb->s_blocksize && *buf) {
++		buf += MSGLEN;
++		offset += MSGLEN;
++	}
++
++	if (offset+MSGLEN > sb->s_blocksize)
++		/* no space left in message buffer */
++		return;
++
++	len = snprintf(buf, MSGLEN, "%s: %s: ", where, function);
++	len += vsnprintf(buf+len, MSGLEN-len, fmt, args);
++}
++
++static void next3_record_journal_errstr(struct super_block *sb,
++		const char *where, const char *function, ...)
++{
++	va_list args;
++
++	va_start(args, function);
++	next3_record_journal_err(sb, where, function, "%s\n", args);
++	va_end(args);
++}
++
+ void next3_journal_abort_handle(const char *caller, const char *err_fn,
+ 		struct buffer_head *bh, handle_t *handle, int err)
+ {
++	struct super_block *sb = handle->h_transaction->t_journal->j_private;
+ 	char nbuf[16];
+ 	const char *errstr = next3_decode_error(NULL, err, nbuf);
+ 
+@@ -144,6 +187,9 @@ void next3_journal_abort_handle(const ch
+ 	printk(KERN_ERR "%s: aborting transaction: %s in %s\n",
+ 	       caller, errstr, err_fn);
+ 
++	/* record error message in journal super block */
++	next3_record_journal_errstr(sb, caller, err_fn, errstr);
++
+ 	journal_abort_handle(handle);
+ }
+ 
+@@ -198,6 +244,7 @@ void next3_error (struct super_block * s
+ 	printk(KERN_CRIT "NEXT3-fs error (device %s): %s: ",sb->s_id, function);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++	next3_record_journal_err(sb, __func__, function, fmt, args);
+ 	va_end(args);
+ 
+ 	next3_handle_error(sb);
+@@ -207,6 +254,7 @@ static const char *next3_decode_error(st
+ 				     char nbuf[16])
+ {
+ 	char *errstr = NULL;
++	handle_t *handle = journal_current_handle();
+ 
+ 	switch (errno) {
+ 	case -EIO:
+@@ -220,6 +268,11 @@ static const char *next3_decode_error(st
+ 			errstr = "Journal has aborted";
+ 		else
+ 			errstr = "Readonly filesystem";
++		if (!handle || handle->h_err != -ENOSPC)
++			break;
++		/* fall through */
++	case -ENOSPC:
++		errstr = "Snapshot out of disk space";
+ 		break;
+ 	default:
+ 		/* If the caller passed in an extra buffer for unknown
+@@ -256,6 +309,9 @@ void __next3_std_error (struct super_blo
+ 	printk (KERN_CRIT "NEXT3-fs error (device %s) in %s: %s\n",
+ 		sb->s_id, function, errstr);
+ 
++	/* record error message in journal super block */
++	next3_record_journal_errstr(sb, __func__, function, errstr);
++
+ 	next3_handle_error(sb);
+ }
+ 
+@@ -280,6 +336,8 @@ void next3_abort (struct super_block * s
+ 	printk(KERN_CRIT "NEXT3-fs error (device %s): %s: ",sb->s_id, function);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++	/* record error message in journal super block */
++	next3_record_journal_err(sb, __func__, function, fmt, args);
+ 	va_end(args);
+ 
+ 	if (test_opt(sb, ERRORS_PANIC))
+@@ -306,6 +364,8 @@ void next3_warning (struct super_block *
+ 	       sb->s_id, function);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++	/* record error message in journal super block */
++	next3_record_journal_err(sb, __func__, function, fmt, args);
+ 	va_end(args);
+ }
+ 
+@@ -2444,6 +2504,25 @@ static void next3_clear_journal_err(stru
+ 	j_errno = journal_errno(journal);
+ 	if (j_errno) {
+ 		char nbuf[16];
++		char *buf1, *buf2;
++		unsigned long offset1, offset2;
++		int len1, len2;
++
++		/* copy message buffer from journal to super block */
++		buf1 = (char *)journal->j_superblock;
++		offset1 = (unsigned long)buf1 % sb->s_blocksize;
++		buf1 += sizeof(journal_superblock_t);
++		offset1 += sizeof(journal_superblock_t);
++		len1 = sb->s_blocksize - offset1;
++		buf2 = (char *)NEXT3_SB(sb)->s_es;
++		offset2 = (unsigned long)buf2 % sb->s_blocksize;
++		buf2 += sizeof(struct next3_super_block);
++		offset2 += sizeof(struct next3_super_block);
++		len2 = sb->s_blocksize - offset2;
++		if (len2 > len1)
++			len2 = len1;
++		if (len2 > 0 && *buf1)
++			memcpy(buf2, buf1, len2);
+ 
+ 		errstr = next3_decode_error(sb, j_errno, nbuf);
+ 		next3_warning(sb, __func__, "Filesystem error recorded "
+@@ -2451,6 +2530,10 @@ static void next3_clear_journal_err(stru
+ 		next3_warning(sb, __func__, "Marking fs in need of "
+ 			     "filesystem check.");
+ 
++		/* clear journal message buffer */
++		if (len1 > 0)
++			memset(buf1, 0, len1);
++
+ 		NEXT3_SB(sb)->s_mount_state |= NEXT3_ERROR_FS;
+ 		es->s_state |= cpu_to_le16(NEXT3_ERROR_FS);
+ 		next3_commit_super (sb, es, 1);

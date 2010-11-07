@@ -1,0 +1,74 @@
+===next3_snapshot_journal_bypass.patch===
+
+next3: snapshot journaled - bypass to save credits
+
+Don't journal COW bitmap indirect blocks to save journal credits.
+On very few COW operations (i.e., first block group access after
+snapshot take), there may be up to 3 extra blocks allocated for the
+active snapshot (i.e., COW bitmap block and up to 2 indirect blocks).
+Taking these 3 extra allocations into account on every COW operation
+would further increase the transaction's COW credits factor.
+Instead, we choose to pay a small performance penalty on these few
+COW bitmap operations and wait until they are synced to disk.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:57.074837640 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:56.534902841 +0300
+@@ -662,7 +662,8 @@ static int next3_alloc_branch_cow(handle
+ 		branch[n].bh = bh;
+ 		lock_buffer(bh);
+ 		BUFFER_TRACE(bh, "call get_create_access");
+-		err = next3_journal_get_create_access(handle, bh);
++		if (!SNAPMAP_ISSYNC(cmd))
++			err = next3_journal_get_create_access(handle, bh);
+ 		if (err) {
+ 			unlock_buffer(bh);
+ 			brelse(bh);
+@@ -688,7 +689,21 @@ static int next3_alloc_branch_cow(handle
+ 		unlock_buffer(bh);
+ 
+ 		BUFFER_TRACE(bh, "call next3_journal_dirty_metadata");
+-		err = next3_journal_dirty_metadata(handle, bh);
++		/*
++		 * When accessing a block group for the first time, the
++		 * block bitmap is the first block to be copied to the
++		 * snapshot.  We don't want to reserve journal credits for
++		 * the indirect blocks that map the bitmap copy (the COW
++		 * bitmap), so instead of writing through the journal, we
++		 * sync the indirect blocks directly to disk.  Of course,
++		 * this is not good for performance but it only happens once
++		 * per snapshot/blockgroup.
++		 */
++		if (SNAPMAP_ISSYNC(cmd)) {
++			mark_buffer_dirty(bh);
++			sync_dirty_buffer(bh);
++		} else
++			err = next3_journal_dirty_metadata(handle, bh);
+ 		if (err)
+ 			goto failed;
+ 	}
+@@ -698,7 +713,9 @@ failed:
+ 	/* Allocation failed, free what we already allocated */
+ 	for (i = 1; i <= n ; i++) {
+ 		BUFFER_TRACE(branch[i].bh, "call journal_forget");
+-		next3_journal_forget(handle, branch[i].bh);
++		if (!SNAPMAP_ISSYNC(cmd))
++			/* no need to check for errors - we failed anyway */
++			(void) next3_journal_forget(handle, branch[i].bh);
+ 	}
+ 	for (i = 0; i <indirect_blks; i++)
+ 		next3_free_blocks(handle, inode, new_blocks[i], 1);
+@@ -807,7 +824,9 @@ static int next3_splice_branch_cow(handl
+ err_out:
+ 	for (i = 1; i <= num; i++) {
+ 		BUFFER_TRACE(where[i].bh, "call journal_forget");
+-		next3_journal_forget(handle, where[i].bh);
++		if (!SNAPMAP_ISSYNC(cmd))
++			/* no need to check for errors - we failed anyway */
++			(void) next3_journal_forget(handle, where[i].bh);
+ 		next3_free_blocks(handle,inode,le32_to_cpu(where[i-1].key),1);
+ 	}
+ 	if (SNAPMAP_ISMOVE(cmd))

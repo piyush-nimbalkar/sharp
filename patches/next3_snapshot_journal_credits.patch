@@ -1,0 +1,345 @@
+===next3_snapshot_journal_credits.patch===
+
+next3: snapshot journaled - increase transaction credits
+
+Snapshot operations are journaled as part of the running transaction.
+The amount of requested credits is multiplied with a factor, to ensure
+that enough buffer credits are reserved in the running transaction.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:58.174855104 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:57.634845560 +0300
+@@ -164,7 +164,8 @@ static handle_t *start_transaction(struc
+  */
+ static int try_to_extend_transaction(handle_t *handle, struct inode *inode)
+ {
+-	if (handle->h_buffer_credits > NEXT3_RESERVE_TRANS_BLOCKS)
++	if (NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle,
++					    NEXT3_RESERVE_TRANS_BLOCKS+1))
+ 		return 0;
+ 	if (!next3_journal_extend(handle, blocks_for_truncate(inode)))
+ 		return 0;
+diff -Nuarp a/fs/next3/next3_jbd.c b/fs/next3/next3_jbd.c
+--- a/fs/next3/next3_jbd.c	2010-07-26 09:21:58.194851989 +0300
++++ b/fs/next3/next3_jbd.c	2010-07-26 09:21:57.654849042 +0300
+@@ -65,5 +65,25 @@ int __next3_journal_dirty_metadata(const
+ 	int err = journal_dirty_metadata(handle, bh);
+ 	if (err)
+ 		next3_journal_abort_handle(where, __func__, bh, handle,err);
++	if (err)
++		return err;
++
++	if (!IS_COWING(handle)) {
++		struct journal_head *jh = bh2jh(bh);
++		jbd_lock_bh_state(bh);
++		if (jh->b_modified == 1) {
++			/*
++			 * buffer_credits was decremented when buffer was
++			 * modified for the first time in the current
++			 * transaction, which may have been during a COW
++			 * operation.  We decrement user_credits and mark
++			 * b_modified = 2, on the first time that the buffer
++			 * is modified not during a COW operation (!h_cowing).
++			 */
++			jh->b_modified = 2;
++			((next3_handle_t *)handle)->h_user_credits--;
++		}
++		jbd_unlock_bh_state(bh);
++	}
+ 	return err;
+ }
+diff -Nuarp a/fs/next3/next3_jbd.h b/fs/next3/next3_jbd.h
+--- a/fs/next3/next3_jbd.h	2010-07-26 09:21:58.234859361 +0300
++++ b/fs/next3/next3_jbd.h	2010-07-26 09:21:57.704915695 +0300
+@@ -71,8 +71,58 @@
+  * one block, plus two quota updates.  Quota allocations are not
+  * needed. */
+ 
+-#define NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, n) \
+-	(handle->h_buffer_credits >= (n))
++/* on block write we have to journal the block itself */
++#define NEXT3_WRITE_CREDITS 1
++/* on snapshot block alloc we have to journal block group bitmap, exclude
++   bitmap and gdb */
++#define NEXT3_ALLOC_CREDITS 3
++/* number of credits for COW bitmap operation (allocated blocks are not
++   journalled): alloc(dind+ind+cow) = 9 */
++#define NEXT3_COW_BITMAP_CREDITS	(3*NEXT3_ALLOC_CREDITS)
++/* number of credits for other block COW operations:
++   alloc(ind+cow)+write(dind+ind) = 8 */
++#define NEXT3_COW_BLOCK_CREDITS	(2*NEXT3_ALLOC_CREDITS+2*NEXT3_WRITE_CREDITS)
++/* number of credits for the first COW operation in the block group:
++   9+8 = 17 */
++#define NEXT3_COW_CREDITS	(NEXT3_COW_BLOCK_CREDITS +	\
++				 NEXT3_COW_BITMAP_CREDITS)
++/* number of credits for snapshot operations counted once per transaction:
++   write(sb+inode+tind) = 3 */
++#define NEXT3_SNAPSHOT_CREDITS 	(3*NEXT3_WRITE_CREDITS)
++/*
++ * in total, for N COW operations, we may have to journal 17N+3 blocks,
++ * and we also want to reserve 17+3 credits for the last COW operation,
++ * so we add 17(N-1)+3+(17+3) to the requested N buffer credits
++ * and request 18N+6 buffer credits.
++ *
++ * we are going to need a bigger journal to accommodate the
++ * extra snapshot credits.
++ * mke2fs uses the following default formula for fs-size above 1G:
++ * journal-size = MIN(128M, fs-size/32)
++ * use the following formula and override the default (-J size=):
++ * journal-size = MIN(3G, fs-size/32)
++ */
++#define NEXT3_SNAPSHOT_TRANS_BLOCKS(n) \
++	((n)*(1+NEXT3_COW_CREDITS)+NEXT3_SNAPSHOT_CREDITS)
++#define NEXT3_SNAPSHOT_START_TRANS_BLOCKS(n) \
++	((n)*(1+NEXT3_COW_CREDITS)+2*NEXT3_SNAPSHOT_CREDITS)
++
++/*
++ * check for sufficient buffer and COW credits
++ */
++#define NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, n)			\
++	((handle)->h_buffer_credits >= NEXT3_SNAPSHOT_TRANS_BLOCKS(n) && \
++	 ((next3_handle_t *)(handle))->h_user_credits >= (n))
++
++#define NEXT3_RESERVE_COW_CREDITS	(NEXT3_COW_CREDITS +		\
++					 NEXT3_SNAPSHOT_CREDITS)
++
++/*
++ * Next3 is not designed for filesystems under 4G with journal size < 128M
++ * Recommended journal size is 2G (created with 'mke2fs -j -J big')
++ */
++#define NEXT3_MIN_JOURNAL_BLOCKS	32768U
++#define NEXT3_BIG_JOURNAL_BLOCKS	(16*NEXT3_MIN_JOURNAL_BLOCKS)
+ 
+ #define NEXT3_RESERVE_TRANS_BLOCKS	12U
+ 
+@@ -119,6 +169,13 @@ struct next3_handle_s
+ 	unsigned int	h_jdata:	1;	/* force data journaling */
+ 	unsigned int	h_aborted:	1;	/* fatal error on handle */
+ 	unsigned int	h_cowing:	1;	/* COWing block to snapshot */
++	/* Number of buffers requested by user:
++	 * (before adding the COW credits factor) */
++	unsigned int	h_base_credits:	14;
++
++	/* Number of buffers the user is allowed to dirty:
++	 * (counts only buffers dirtied when !h_cowing) */
++	unsigned int	h_user_credits:	14;
+ 
+ #ifdef CONFIG_DEBUG_LOCK_ALLOC
+ 	struct lockdep_map	h_lockdep_map;
+@@ -203,12 +260,19 @@ int __next3_journal_dirty_metadata(const
+ 
+ int next3_journal_dirty_data(handle_t *handle, struct buffer_head *bh);
+ 
+-handle_t *next3_journal_start_sb(struct super_block *sb, int nblocks);
++#define next3_journal_trace(n, caller, handle, nblocks)
++
++handle_t *__next3_journal_start(const char *where,
++		struct super_block *sb, int nblocks);
++
++#define next3_journal_start_sb(sb, nblocks) \
++	__next3_journal_start(__func__, 	\
++			(sb), (nblocks))
++
++#define next3_journal_start(inode, nblocks) \
++	__next3_journal_start(__func__, 	\
++			(inode)->i_sb, (nblocks))
+ 
+-static inline handle_t *next3_journal_start(struct inode *inode, int nblocks)
+-{
+-	return next3_journal_start_sb(inode->i_sb, nblocks);
+-}
+ 
+ int __next3_journal_stop(const char *where, handle_t *handle);
+ 
+@@ -220,25 +284,60 @@ static inline handle_t *next3_journal_cu
+ 	return journal_current_handle();
+ }
+ 
++/*
++ * Next3 wrapper for journal_extend()
++ * When transaction runs out of buffer credits it is possible to try and
++ * extend the buffer credits without restarting the transaction.
++ * Next3 wrapper for journal_start() has increased the user requested buffer
++ * credits to include the extra credits for COW operations.
++ * This wrapper checks the remaining user credits and how many COW credits
++ * are missing and then tries to extend the transaction.
++ */
+ static inline int __next3_journal_extend(const char *where,
+-		handle_t *handle, int nblocks)
++		next3_handle_t *handle, int nblocks)
+ {
+-	return journal_extend(handle, nblocks);
++	int lower = NEXT3_SNAPSHOT_TRANS_BLOCKS(handle->h_user_credits+nblocks);
++	int err = 0;
++	int missing = lower - handle->h_buffer_credits;
++	if (missing > 0)
++		/* extend transaction to keep buffer credits above lower
++		 * limit */
++		err = journal_extend((handle_t *)handle, missing);
++	if (!err) {
++		handle->h_base_credits += nblocks;
++		handle->h_user_credits += nblocks;
++		next3_journal_trace(SNAP_WARN, where, handle, nblocks);
++	}
++	return err;
+ }
+ 
++/*
++ * Next3 wrapper for journal_restart()
++ * When transaction runs out of buffer credits and cannot be extended,
++ * the alternative is to restart it (start a new transaction).
++ * This wrapper increases the user requested buffer credits to include the
++ * extra credits for COW operations.
++ */
+ static inline int __next3_journal_restart(const char *where,
+-		handle_t *handle, int nblocks)
++		next3_handle_t *handle, int nblocks)
+ {
+-	return journal_restart(handle, nblocks);
++	int err = journal_restart((handle_t *)handle,
++				  NEXT3_SNAPSHOT_START_TRANS_BLOCKS(nblocks));
++	if (!err) {
++		handle->h_base_credits = nblocks;
++		handle->h_user_credits = nblocks;
++		next3_journal_trace(SNAP_WARN, where, handle, nblocks);
++	}
++	return err;
+ }
+ 
+ #define next3_journal_extend(handle, nblocks) \
+ 	__next3_journal_extend(__func__, 	\
+-			(handle), (nblocks))
++			(next3_handle_t *)(handle), (nblocks))
+ 
+ #define next3_journal_restart(handle, nblocks) \
+ 	__next3_journal_restart(__func__, 	\
+-			(handle), (nblocks))
++			(next3_handle_t *)(handle), (nblocks))
+ 
+ 
+ static inline int next3_journal_blocks_per_page(struct inode *inode)
+diff -Nuarp a/fs/next3/resize.c b/fs/next3/resize.c
+--- a/fs/next3/resize.c	2010-07-26 09:21:58.194851989 +0300
++++ b/fs/next3/resize.c	2010-07-26 09:21:57.664915005 +0300
+@@ -167,7 +167,7 @@ static int extend_or_restart_transaction
+ {
+ 	int err;
+ 
+-	if (handle->h_buffer_credits >= thresh)
++	if (NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, thresh))
+ 		return 0;
+ 
+ 	err = next3_journal_extend(handle, NEXT3_MAX_TRANS_DATA);
+@@ -699,6 +699,8 @@ static void update_backups(struct super_
+ 
+ 		/* Out of journal space, and can't get more - abort - so sad */
+ 		int buffer_credits = handle->h_buffer_credits;
++		if (!NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, 1))
++			buffer_credits = 0;
+ 		if (buffer_credits == 0)
+ 			err = next3_journal_extend(handle,
+ 					NEXT3_MAX_TRANS_DATA);
+diff -Nuarp a/fs/next3/snapshot.c b/fs/next3/snapshot.c
+--- a/fs/next3/snapshot.c	2010-07-26 09:21:58.254859158 +0300
++++ b/fs/next3/snapshot.c	2010-07-26 09:21:57.714850362 +0300
+@@ -492,6 +492,18 @@ __next3_snapshot_trace_cow(const char *w
+  */
+ static inline void next3_snapshot_cow_begin(handle_t *handle)
+ {
++	if (!NEXT3_SNAPSHOT_HAS_TRANS_BLOCKS(handle, 1)) {
++		/*
++		 * The test above is based on lower limit heuristics of
++		 * user_credits/buffer_credits, which is not always accurate,
++		 * so it is possible that there is no bug here, just another
++		 * false alarm.
++		 */
++		snapshot_debug_hl(1, "warning: insufficient buffer/user "
++				  "credits (%d/%d) for COW operation?\n",
++				  handle->h_buffer_credits,
++				  ((next3_handle_t *)handle)->h_user_credits);
++	}
+ 	snapshot_debug_hl(4, "{\n");
+ 	IS_COWING(handle) = 1;
+ }
+diff -Nuarp a/fs/next3/super.c b/fs/next3/super.c
+--- a/fs/next3/super.c	2010-07-26 09:21:58.204857037 +0300
++++ b/fs/next3/super.c	2010-07-26 09:21:57.674849914 +0300
+@@ -82,9 +82,10 @@ static int next3_freeze(struct super_blo
+  * that sync() will call the filesystem's write_super callback if
+  * appropriate.
+  */
+-handle_t *next3_journal_start_sb(struct super_block *sb, int nblocks)
++handle_t *__next3_journal_start(const char *where,
++		struct super_block *sb, int nblocks)
+ {
+-	const char *where = __func__;
++	next3_handle_t *handle;
+ 	journal_t *journal;
+ 
+ 	if (sb->s_flags & MS_RDONLY)
+@@ -100,7 +101,20 @@ handle_t *next3_journal_start_sb(struct 
+ 		return ERR_PTR(-EROFS);
+ 	}
+ 
+-	return journal_start(journal, nblocks);
++	/* sanity test for standalone module */
++	if (sizeof(next3_handle_t) != sizeof(handle_t))
++		return ERR_PTR(-EINVAL);
++
++	handle = (next3_handle_t *)journal_start(journal,
++			       NEXT3_SNAPSHOT_START_TRANS_BLOCKS(nblocks));
++	if (!IS_ERR(handle)) {
++		if (handle->h_ref == 1) {
++			handle->h_base_credits = nblocks;
++			handle->h_user_credits = nblocks;
++		}
++		next3_journal_trace(SNAP_WARN, where, handle, nblocks);
++	}
++	return (handle_t *)handle;
+ }
+ 
+ /*
+@@ -2206,6 +2220,23 @@ static journal_t *next3_get_journal(stru
+ 		return NULL;
+ 	}
+ 
++	if ((journal_inode->i_size >> NEXT3_BLOCK_SIZE_BITS(sb)) <
++			NEXT3_MIN_JOURNAL_BLOCKS) {
++		printk(KERN_ERR "NEXT3-fs: journal is too small (%lld < %u).\n",
++			journal_inode->i_size >> NEXT3_BLOCK_SIZE_BITS(sb),
++			NEXT3_MIN_JOURNAL_BLOCKS);
++		iput(journal_inode);
++		return NULL;
++	}
++
++	if ((journal_inode->i_size >> NEXT3_BLOCK_SIZE_BITS(sb)) <
++			NEXT3_BIG_JOURNAL_BLOCKS)
++		snapshot_debug(1, "warning: journal is not big enough "
++			"(%lld < %u) - this might affect concurrent "
++			"filesystem writers performance!\n",
++			journal_inode->i_size >> NEXT3_BLOCK_SIZE_BITS(sb),
++			NEXT3_BIG_JOURNAL_BLOCKS);
++
+ 	journal = journal_init_inode(journal_inode);
+ 	if (!journal) {
+ 		printk(KERN_ERR "NEXT3-fs: Could not load journal inode\n");
+diff -Nuarp a/include/linux/jbd.h b/include/linux/jbd.h
+--- a/include/linux/jbd.h	2010-07-26 09:21:58.084919288 +0300
++++ b/include/linux/jbd.h	2010-07-26 09:21:57.554846706 +0300
+@@ -376,6 +376,13 @@ struct handle_s
+ 	unsigned int	h_jdata:	1;	/* force data journaling */
+ 	unsigned int	h_aborted:	1;	/* fatal error on handle */
+ 	unsigned int	h_cowing:	1;	/* COWing block to snapshot */
++	/* Number of buffers requested by user:
++	 * (before adding the COW credits factor) */
++	unsigned int	h_base_credits:	14;
++
++	/* Number of buffers the user is allowed to dirty:
++	 * (counts only buffers dirtied when !h_cowing) */
++	unsigned int	h_user_credits:	14;
+ 
+ #ifdef CONFIG_DEBUG_LOCK_ALLOC
+ 	struct lockdep_map	h_lockdep_map;
