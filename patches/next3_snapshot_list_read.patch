@@ -1,0 +1,142 @@
+===next3_snapshot_list_read.patch===
+
+next3: snapshot list - read through to previous snapshot
+
+On snapshot page read, the function next3_get_block() is called
+to map the page to a disk block.  If the page is not mapped in the
+snapshot file, the newer snapshots on the list are checked and the
+oldest found mapping is returned.  If the page is not mapped in any of
+the newer snapshots, a direct mapping to the block device is returned.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:54.824800614 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:54.274798934 +0300
+@@ -883,6 +883,11 @@ int next3_get_blocks_handle(handle_t *ha
+ 	int read_through = 0;
+ 	struct inode *prev_snapshot;
+ 
++retry:
++	blocks_to_boundary = 0;
++	count = 0;
++	ei = NEXT3_I(inode);
++	prev_snapshot = NULL;
+ 	/* read through expected only to snapshot file */
+ 	BUG_ON(read_through && !next3_snapshot_file(inode));
+ 	if (next3_snapshot_file(inode))
+@@ -962,6 +967,15 @@ int next3_get_blocks_handle(handle_t *ha
+ 	 * is filled forever.
+ 	 */
+ 	if (read_through && !err) {
++		if (prev_snapshot) {
++			while (partial > chain) {
++				brelse(partial->bh);
++				partial--;
++			}
++			/* repeat the same routine with prev snapshot */
++			inode = prev_snapshot;
++			goto retry;
++		}
+ 		if (next3_snapshot_is_active(inode)) {
+ 			/* active snapshot - read though holes to block
+ 			 * device */
+diff -Nuarp a/fs/next3/snapshot.c b/fs/next3/snapshot.c
+--- a/fs/next3/snapshot.c	2010-07-26 09:21:54.904855281 +0300
++++ b/fs/next3/snapshot.c	2010-07-26 09:21:54.354797675 +0300
+@@ -66,12 +66,51 @@ int next3_snapshot_map_blocks(handle_t *
+  * in which case 'prev_snapshot' is pointed to the previous snapshot
+  * on the list or set to NULL to indicate read through to block device.
+  */
++/*
++ * In-memory snapshot list manipulation is protected by snapshot_mutex.
++ * In this function we read the in-memory snapshot list without holding
++ * snapshot_mutex, because we don't want to slow down snapshot read performance.
++ * Following is a proof, that even though we don't hold snapshot_mutex here,
++ * reading the list is safe from races with snapshot list delete and add (take).
++ *
++ * Proof of no race with snapshot delete:
++ * --------------------------------------
++ * We get here only when reading from an enabled snapshot or when reading
++ * through from an enabled snapshot to a newer snapshot.  Snapshot delete
++ * operation is only allowed for a disabled snapshot, when no older enabled
++ * snapshot exists (i.e., the deleted snapshot in not 'in-use').  Hence,
++ * read through is safe from races with snapshot list delete operations.
++ *
++ * Proof of no race with snapshot take:
++ * ------------------------------------
++ * Snapshot B take is composed of the following steps:
++ * - Add snapshot B to head of list (active_snapshot is A).
++ * - Allocate and copy snapshot B initial blocks.
++ * - Clear snapshot A 'active' flag.
++ * - Set snapshot B 'list' and 'active' flags.
++ * - Set snapshot B as active snapshot (active_snapshot=B).
++ *
++ * When reading from snapshot A during snapshot B take, we have 2 cases:
++ * 1. is_active(A) is tested before setting active_snapshot=B -
++ *    read through from A to block device.
++ * 2. is_active(A) is tested after setting active_snapshot=B -
++ *    read through from A to B.
++ *
++ * When reading from snapshot B during snapshot B take, we have 3 cases:
++ * 1. B->flags and B->prev are read before adding B to list -
++ *    access to B denied.
++ * 2. B->flags is read before setting the 'list' and 'active' flags -
++ *    normal file access to B.
++ * 3. B->flags is read after setting the 'list' and 'active' flags -
++ *    read through from B to block device.
++ */
+ int next3_snapshot_get_inode_access(handle_t *handle, struct inode *inode,
+ 		next3_fsblk_t iblock, int count, int cmd,
+ 		struct inode **prev_snapshot)
+ {
+ 	struct next3_inode_info *ei = NEXT3_I(inode);
+ 	unsigned int flags = ei->i_flags;
++	struct list_head *prev = ei->i_snaplist.prev;
+ #ifdef CONFIG_NEXT3_FS_DEBUG
+ 	next3_fsblk_t block = SNAPSHOT_BLOCK(iblock);
+ 	unsigned long block_group = (iblock < SNAPSHOT_BLOCK_OFFSET ? -1 :
+@@ -95,7 +134,11 @@ int next3_snapshot_get_inode_access(hand
+ 		BUG_ON(handle && IS_COWING(handle));
+ 
+ 	if (!(flags & NEXT3_SNAPFILE_LIST_FL)) {
+-		return 0;
++		if (prev && prev == &NEXT3_SB(inode->i_sb)->s_snapshot_list)
++			/* normal access to snapshot being taken */
++			return 0;
++		/* snapshot not on the list - read/write access denied */
++		return -EPERM;
+ 	}
+ 
+ 	if (cmd) {
+@@ -123,7 +166,28 @@ int next3_snapshot_get_inode_access(hand
+ 	 * calling next3_snapshot_get_block()
+ 	 */
+ 	*prev_snapshot = NULL;
+-	return next3_snapshot_is_active(inode) ? 1 : 0;
++	if (next3_snapshot_is_active(inode) ||
++			(flags & NEXT3_SNAPFILE_ACTIVE_FL))
++		/* read through from active snapshot to block device */
++		return 1;
++
++	if (list_empty(prev))
++		/* not on snapshots list? */
++		return -EIO;
++
++	if (prev == &NEXT3_SB(inode->i_sb)->s_snapshot_list)
++		/* active snapshot not found on list? */
++		return -EIO;
++
++	/* read through to prev snapshot on the list */
++	ei = list_entry(prev, struct next3_inode_info, i_snaplist);
++	*prev_snapshot = &ei->vfs_inode;
++
++	if (!next3_snapshot_file(*prev_snapshot))
++		/* non snapshot file on the list? */
++		return -EIO;
++
++	return 1;
+ }
+ 
+ /*

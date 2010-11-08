@@ -1,0 +1,215 @@
+===next3_snapshot_journal_cache.patch===
+
+next3: snapshot journaled - cache last COW tid in journal_head
+
+Cache last COW transaction id in buffer's journal_head.
+The cache suppresses COW tests until the transaction in committed.
+By default, the running transaction is committed every 5 seconds,
+which implies an average COW cache expiry of 2.5 seconds.
+Before taking a new snapshot, the journal is flushed to disk
+and the current transaction in committed, so the COW cache is
+invalidated (as it should be).
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/snapshot.c b/fs/next3/snapshot.c
+--- a/fs/next3/snapshot.c	2010-07-26 09:21:56.624830897 +0300
++++ b/fs/next3/snapshot.c	2010-07-26 09:21:56.044823431 +0300
+@@ -485,6 +485,118 @@ __next3_snapshot_trace_cow(const char *w
+ #define next3_snapshot_trace_cow(where, handle, sb, inode, bh, block, cmd)
+ #endif
+ 
++/*
++ * The last transaction ID during which the buffer has been COWed is stored in
++ * the b_cow_tid field of the journal_head struct.  If we know that the buffer
++ * was COWed during the current transaction, we don't need to COW it again.
++ * Find the offset of the b_cow_tid field by checking for free space in the
++ * journal_head struct. If there is no free space, don't use cow tid cache.
++ * This method is used so the next3 module could be loaded without rebuilding
++ * the kernel with modified journal_head struct.
++ * [jbd_lock_bh_state()]
++ */
++
++static int cow_tid_offset;
++
++void init_next3_snapshot_cow_cache()
++{
++	const struct journal_head *jh = NULL;
++	char *pos, *end;
++
++	if (cow_tid_offset)
++		return;
++
++#ifdef CONFIG_64BIT
++	/* check for 32bit padding to 64bit alignment after b_modified */
++	pos = (char *)&jh->b_modified + sizeof(jh->b_modified);
++	end = (char *)&jh->b_frozen_data;
++	if (pos + sizeof(tid_t) <= end)
++		goto found;
++
++#endif
++	/* check for extra jbd2 fields after last jbd field */
++	pos = (char *)&jh->b_cpprev + sizeof(jh->b_cpprev);
++	end = (char *)jh + sizeof(*jh);
++	if (pos + sizeof(tid_t) <= end)
++		goto found;
++
++	/* no free space found - disable cow cache */
++	cow_tid_offset = -1;
++	return;
++found:
++	cow_tid_offset = pos - (char *)NULL;
++#ifdef CONFIG_NEXT3_FS_DEBUG
++	cow_cache_offset = cow_tid_offset;
++#endif
++}
++
++#define cow_cache_enabled()	(cow_tid_offset > 0)
++#define jh_cow_tid(jh)		\
++	*(tid_t *)(((char *)(jh))+cow_tid_offset)
++
++#define test_cow_tid(jh, handle)	\
++	(jh_cow_tid(jh) == (handle)->h_transaction->t_tid)
++#define set_cow_tid(jh, handle)		\
++	jh_cow_tid(jh) = (handle)->h_transaction->t_tid
++
++/*
++ * Journal COW cache functions.
++ * a block can only be COWed once per snapshot,
++ * so a block can only be COWed once per transaction,
++ * so a buffer that was COWed in the current transaction,
++ * doesn't need to be COWed.
++ *
++ * Return values:
++ * 1 - block was COWed in current transaction
++ * 0 - block wasn't COWed in current transaction
++ */
++static int
++next3_snapshot_test_cowed(handle_t *handle, struct buffer_head *bh)
++{
++	struct journal_head *jh;
++
++	if (!cow_cache_enabled())
++		return 0;
++
++	/* check the COW tid in the journal head */
++	if (bh && buffer_jbd(bh)) {
++		jbd_lock_bh_state(bh);
++		jh = bh2jh(bh);
++		if (jh && !test_cow_tid(jh, handle))
++			jh = NULL;
++		jbd_unlock_bh_state(bh);
++		if (jh)
++			/*
++			 * Block was already COWed in the running transaction,
++			 * so we don't need to COW it again.
++			 */
++			return 1;
++	}
++	return 0;
++}
++
++static void
++next3_snapshot_mark_cowed(handle_t *handle, struct buffer_head *bh)
++{
++	struct journal_head *jh;
++
++	if (!cow_cache_enabled())
++		return;
++
++	if (bh && buffer_jbd(bh)) {
++		jbd_lock_bh_state(bh);
++		jh = bh2jh(bh);
++		if (jh && !test_cow_tid(jh, handle))
++			/*
++			 * this is the first time this block was COWed
++			 * in the running transaction.
++			 * update the COW tid in the journal head
++			 * to mark that this block doesn't need to be COWed.
++			 */
++			set_cow_tid(jh, handle);
++		jbd_unlock_bh_state(bh);
++	}
++}
+ 
+ /*
+  * Begin COW or move operation.
+@@ -565,6 +677,13 @@ int next3_snapshot_test_and_cow(const ch
+ 		return -EPERM;
+ 	}
+ 
++	/* check if the buffer was COWed in the current transaction */
++	if (next3_snapshot_test_cowed(handle, bh)) {
++		snapshot_debug_hl(4, "buffer found in COW cache - "
++				  "skip block cow!\n");
++		trace_cow_inc(handle, ok_jh);
++		return 0;
++	}
+ 
+ 	/* BEGIN COWing */
+ 	next3_snapshot_cow_begin(handle);
+@@ -656,6 +775,8 @@ int next3_snapshot_test_and_cow(const ch
+ test_pending_cow:
+ 
+ cowed:
++	/* mark the buffer COWed in the current transaction */
++	next3_snapshot_mark_cowed(handle, bh);
+ out:
+ 	brelse(sbh);
+ 	/* END COWing */
+diff -Nuarp a/fs/next3/snapshot_debug.c b/fs/next3/snapshot_debug.c
+--- a/fs/next3/snapshot_debug.c	2010-07-26 09:21:56.644831523 +0300
++++ b/fs/next3/snapshot_debug.c	2010-07-26 09:21:56.064891128 +0300
+@@ -46,11 +46,13 @@ static const char *snapshot_test_names[S
+ 
+ u16 snapshot_enable_test[SNAPSHOT_TESTS_NUM] __read_mostly = {0};
+ u8 snapshot_enable_debug __read_mostly = 1;
++u8 cow_cache_offset __read_mostly = 0;
+ 
+ static struct dentry *next3_debugfs_dir;
+ static struct dentry *snapshot_debug;
+ static struct dentry *snapshot_version;
+ static struct dentry *snapshot_test[SNAPSHOT_TESTS_NUM];
++static struct dentry *cow_cache;
+ 
+ static char snapshot_version_str[] = NEXT3_SNAPSHOT_VERSION;
+ struct debugfs_blob_wrapper snapshot_version_blob = {
+@@ -80,6 +82,9 @@ void next3_create_debugfs_entry(void)
+ 					      S_IRUGO|S_IWUSR,
+ 					      next3_debugfs_dir,
+ 					      &snapshot_enable_test[i]);
++	cow_cache = debugfs_create_u8("cow-cache", S_IRUGO,
++					   next3_debugfs_dir,
++					   &cow_cache_offset);
+ }
+ 
+ /*
+@@ -92,6 +97,8 @@ void next3_remove_debugfs_entry(void)
+ 
+ 	if (!next3_debugfs_dir)
+ 		return;
++	if (cow_cache)
++		debugfs_remove(cow_cache);
+ 	for (i = 0; i < SNAPSHOT_TESTS_NUM && i < SNAPSHOT_TEST_NAMES; i++)
+ 		if (snapshot_test[i])
+ 			debugfs_remove(snapshot_test[i]);
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:21:56.634835741 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:21:56.054825808 +0300
+@@ -277,6 +277,7 @@ extern int next3_snapshot_get_inode_acce
+ 					   next3_fsblk_t iblock,
+ 					   int count, int cmd,
+ 					   struct inode **prev_snapshot);
++extern void init_next3_snapshot_cow_cache(void);
+ 
+ /*
+  * Snapshot constructor/destructor
+@@ -290,6 +291,7 @@ extern void next3_snapshot_destroy(struc
+ static inline int init_next3_snapshot(void)
+ {
+ 	init_next3_snapshot_debug();
++	init_next3_snapshot_cow_cache();
+ 	return 0;
+ }
+ 
