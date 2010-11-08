@@ -1,0 +1,236 @@
+===next3_snapshot_hooks_data.patch===
+
+next3: snapshot hooks - move data blocks
+
+Before every regular file data buffer write,
+the function next3_get_block() is called to map the buffer to disk.
+We use this hook to call the snapshot API snapshot_get_move_access(),
+to optionally move the block to the snapshot file.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:22:07.645000016 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:22:07.104994027 +0300
+@@ -816,6 +816,24 @@ int next3_get_blocks_handle(handle_t *ha
+ 
+ 	partial = next3_get_branch(inode, depth, offsets, chain, &err);
+ 
++	if (!partial && create &&
++			next3_snapshot_should_move_data(inode)) {
++		first_block = le32_to_cpu(chain[depth - 1].key);
++		blocks_to_boundary = 0;
++		/* should move 1 data block to snapshot? */
++		err = next3_snapshot_get_move_access(handle, inode,
++				first_block, 0);
++		if (err)
++			/* do not map found block */
++			partial = chain + depth - 1;
++		if (err < 0)
++			/* cleanup the whole chain and exit */
++			goto cleanup;
++		if (err > 0)
++			/* check again under truncate_mutex */
++			err = -EAGAIN;
++	}
++
+ 	/* Simplest case - block found, no allocation needed */
+ 	if (!partial) {
+ 		first_block = le32_to_cpu(chain[depth - 1].key);
+@@ -872,6 +890,19 @@ int next3_get_blocks_handle(handle_t *ha
+ 			partial--;
+ 		}
+ 		partial = next3_get_branch(inode, depth, offsets, chain, &err);
++		if (!partial && next3_snapshot_should_move_data(inode)) {
++			first_block = le32_to_cpu(chain[depth - 1].key);
++			blocks_to_boundary = 0;
++			/* should move 1 data block to snapshot? */
++			err = next3_snapshot_get_move_access(handle, inode,
++					first_block, 0);
++			if (err)
++				/* re-allocate 1 data block */
++				partial = chain + depth - 1;
++			if (err < 0)
++				/* cleanup the whole chain and exit */
++				goto out_mutex;
++		}
+ 		if (!partial) {
+ 			count++;
+ 			mutex_unlock(&ei->truncate_mutex);
+@@ -908,6 +939,43 @@ int next3_get_blocks_handle(handle_t *ha
+ 	if (err)
+ 		goto out_mutex;
+ 
++	if (*(partial->p)) {
++		int ret;
++
++		/* old block is being replaced with a new block */
++		if (buffer_partial_write(bh_result) &&
++				!buffer_uptodate(bh_result)) {
++			/* read old block data before moving it to snapshot */
++			map_bh(bh_result, inode->i_sb,
++					le32_to_cpu(*(partial->p)));
++			ll_rw_block(READ, 1, &bh_result);
++			wait_on_buffer(bh_result);
++			/* clear old block mapping */
++			clear_buffer_mapped(bh_result);
++			if (!buffer_uptodate(bh_result)) {
++				err = -EIO;
++				goto out_mutex;
++			}
++		}
++
++		if (buffer_partial_write(bh_result))
++			/* prevent zero out of page in block_write_begin() */
++			SetPageUptodate(bh_result->b_page);
++
++		/* move old block to snapshot */
++		ret = next3_snapshot_get_move_access(handle, inode,
++				le32_to_cpu(*(partial->p)), 1);
++		if (ret < 1) {
++			/* failed to move to snapshot - free new block */
++			next3_free_blocks(handle, inode,
++					le32_to_cpu(partial->key), 1);
++			err = ret ? : -EIO;
++			goto out_mutex;
++		}
++		/* block moved to snapshot - continue to splice new block */
++		err = 0;
++	}
++
+ 	/*
+ 	 * The next3_splice_branch call will free and forget any buffers
+ 	 * on the new chain if there is a failure, but that risks using
+@@ -1159,6 +1227,7 @@ static int next3_write_begin(struct file
+ 				loff_t pos, unsigned len, unsigned flags,
+ 				struct page **pagep, void **fsdata)
+ {
++	struct buffer_head *bh = NULL;
+ 	struct inode *inode = mapping->host;
+ 	int ret;
+ 	handle_t *handle;
+@@ -1187,6 +1256,27 @@ retry:
+ 		ret = PTR_ERR(handle);
+ 		goto out;
+ 	}
++	/*
++	 * XXX: We can also check next3_snapshot_has_active() here and we don't
++	 * need to unmap the buffers is there is no active snapshot, but the
++	 * result must be valid throughout the writepage() operation and to
++	 * guarantee this we have to know that the transaction is not restarted.
++	 * Can we count on that?
++	 */
++	if (next3_snapshot_should_move_data(inode)) {
++		if (!page_has_buffers(page))
++			create_empty_buffers(page, inode->i_sb->s_blocksize, 0);
++		/* snapshots only work when blocksize == pagesize */
++		bh = page_buffers(page);
++		if (len < PAGE_CACHE_SIZE)
++			/* read block before moving it to snapshot */
++			set_buffer_partial_write(bh);
++		else
++			clear_buffer_partial_write(bh);
++		/* make sure that get_block() is called */
++		clear_buffer_mapped(bh);
++	}
++
+ 	ret = block_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+ 							next3_get_block);
+ 	if (ret)
+@@ -1197,6 +1287,12 @@ retry:
+ 				from, to, NULL, do_journal_get_write_access);
+ 	}
+ write_begin_failed:
++	/*
++	 * buffer_partial_write() is only used by this function to pass the
++	 * information to next3_get_block() and should be cleared on exit.
++	 */
++	if (bh)
++		clear_buffer_partial_write(bh);
+ 	if (ret) {
+ 		/*
+ 		 * block_write_begin may have instantiated a few blocks
+@@ -1950,6 +2046,18 @@ static int next3_block_truncate_page(han
+ 			goto unlock;
+ 	}
+ 
++	/* check if block needs to be moved to snapshot before zeroing */
++	if (next3_snapshot_should_move_data(inode)) {
++		err = next3_get_block(inode, iblock, bh, 1);
++		if (err)
++			goto unlock;
++		if (buffer_new(bh)) {
++			unmap_underlying_metadata(bh->b_bdev,
++					bh->b_blocknr);
++			clear_buffer_new(bh);
++		}
++	}
++
+ 	if (next3_should_journal_data(inode)) {
+ 		BUFFER_TRACE(bh, "get write access");
+ 		err = next3_journal_get_write_access(handle, bh);
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:22:07.735004999 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:22:07.194993741 +0300
+@@ -86,6 +86,11 @@
+ #define SNAPSHOT_SET_DISABLED(inode)		\
+ 	i_size_write((inode), 0)
+ 
++enum next3_bh_state_bits {
++	BH_Partial_Write = 31,	/* Buffer should be read before write */
++};
++
++BUFFER_FNS(Partial_Write, partial_write)
+ 
+ 
+ #define next3_snapshot_cow(handle, inode, bh, cow) 0
+@@ -147,6 +152,31 @@ static inline int next3_snapshot_get_cre
+ }
+ 
+ /*
++ * get_move_access() - move block to snapshot
++ * @handle:	JBD handle
++ * @inode:	owner of @block
++ * @block:	address of @block
++ * @move:	if false, only test if @block needs to be moved
++ *
++ * Called from next3_get_blocks_handle() before overwriting a data block,
++ * when buffer_move() is true.  Specifically, only data blocks of regular files,
++ * whose data is not being journaled are moved on full page write.
++ * Journaled data blocks are COWed on get_write_access().
++ * Snapshots and excluded files blocks are never moved-on-write.
++ * If @move is true, then truncate_mutex is held.
++ *
++ * Return values:
++ * = 1 - @block was moved or may not be overwritten
++ * = 0 - @block may be overwritten
++ * < 0 - error
++ */
++static inline int next3_snapshot_get_move_access(handle_t *handle,
++		struct inode *inode, next3_fsblk_t block, int move)
++{
++	return next3_snapshot_move(handle, inode, block, 1, move);
++}
++
++/*
+  * get_delete_access() - move count blocks to snapshot
+  * @handle:	JBD handle
+  * @inode:	owner of blocks
+@@ -205,6 +235,16 @@ extern next3_fsblk_t next3_get_inode_blo
+ 
+ 
+ 
++/*
++ * check if @inode data blocks should be moved-on-write
++ */
++static inline int next3_snapshot_should_move_data(struct inode *inode)
++{
++	/* when a data block is journaled, it is already COWed as metadata */
++	if (next3_should_journal_data(inode))
++		return 0;
++	return 1;
++}
+ 
+ 
+ 

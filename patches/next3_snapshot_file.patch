@@ -1,0 +1,645 @@
+==next3_snapshot_file.patch==
+
+next3: snapshot file
+
+Next3 snapshot implementation as a file inside the file system.
+Snapshot files are marked with the snapfile flag and have special
+read-only address space ops.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:22:07.104994027 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:22:06.594988348 +0300
+@@ -1839,6 +1839,13 @@ static ssize_t next3_direct_IO(int rw, s
+ 	int orphan = 0;
+ 	size_t count = iov_length(iov, nr_segs);
+ 
++	/*
++	 * snapshot support for direct I/O is not implemented,
++	 * so direct I/O is disabled when there are active snapshots.
++	 */
++	if (next3_snapshot_has_active(inode->i_sb))
++		return -EOPNOTSUPP;
++
+ 	if (rw == WRITE) {
+ 		loff_t final_size = offset + count;
+ 
+@@ -1964,8 +1971,38 @@ static const struct address_space_operat
+ 	.is_partially_uptodate  = block_is_partially_uptodate,
+ };
+ 
++static int next3_no_writepage(struct page *page,
++				struct writeback_control *wbc)
++{
++	unlock_page(page);
++	return -EIO;
++}
++
++/*
++ * Snapshot file page operations:
++ * always readpage (by page) with buffer tracked read.
++ * user cannot writepage or direct_IO to a snapshot file.
++ *
++ * snapshot file pages are written to disk after a COW operation in "ordered"
++ * mode and are never changed after that again, so there is no data corruption
++ * risk when using "ordered" mode on snapshot files.
++ * some snapshot data pages are written to disk by sync_dirty_buffer(), namely
++ * the snapshot COW bitmaps and a few initial blocks copied on snapshot_take().
++ */
++static const struct address_space_operations next3_snapfile_aops = {
++	.readpage		= next3_readpage,
++	.readpages		= next3_readpages,
++	.writepage		= next3_no_writepage,
++	.bmap			= next3_bmap,
++	.invalidatepage		= next3_invalidatepage,
++	.releasepage		= next3_releasepage,
++};
++
+ void next3_set_aops(struct inode *inode)
+ {
++	if (next3_snapshot_file(inode))
++		inode->i_mapping->a_ops = &next3_snapfile_aops;
++	else
+ 	if (next3_should_order_data(inode))
+ 		inode->i_mapping->a_ops = &next3_ordered_aops;
+ 	else if (next3_should_writeback_data(inode))
+diff -Nuarp a/fs/next3/next3.h b/fs/next3/next3.h
+--- a/fs/next3/next3.h	2010-07-26 09:22:07.154991400 +0300
++++ b/fs/next3/next3.h	2010-07-26 09:22:06.644984946 +0300
+@@ -193,17 +193,58 @@ struct next3_group_desc
+ #define NEXT3_NOTAIL_FL			0x00008000 /* file tail should not be merged */
+ #define NEXT3_DIRSYNC_FL			0x00010000 /* dirsync behaviour (directories only) */
+ #define NEXT3_TOPDIR_FL			0x00020000 /* Top of directory hierarchies*/
++#define NEXT3_HUGE_FILE_FL		0x00040000 /* Set to each huge file */
++/* snapshot non-persistent flags overriding unused compression flags */
++#define NEXT3_SNAPFILE_LIST_FL		0x00000100 /* snapshot is on list (S) */
++#define NEXT3_SNAPFILE_ENABLED_FL	0x00000200 /* snapshot is enabled (n) */
++#define NEXT3_SNAPFILE_ACTIVE_FL	0x00000400 /* snapshot is active  (a) */
++#define NEXT3_SNAPFILE_INUSE_FL		0x00000800 /* snapshot is in-use  (p) */
++/* snapshot persistent flags */
++#define NEXT3_SNAPFILE_FL		0x01000000 /* snapshot file (x) */
++#define NEXT3_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted (s) */
++#define NEXT3_SNAPFILE_SHRUNK_FL	0x08000000 /* snapshot was shrunk (h) */
++/* more snapshot non-persistent flags */
++#define NEXT3_SNAPFILE_OPEN_FL		0x10000000 /* snapshot is mounted (o) */
++#define NEXT3_SNAPFILE_TAGGED_FL	0x20000000 /* snapshot is tagged  (t) */
++/* end of snapshot flags */
+ #define NEXT3_RESERVED_FL		0x80000000 /* reserved for next3 lib */
+ 
+-#define NEXT3_FL_USER_VISIBLE		0x0003DFFF /* User visible flags */
+-#define NEXT3_FL_USER_MODIFIABLE		0x000380FF /* User modifiable flags */
++/* snapshot flags reserved for user */
++#define NEXT3_FL_SNAPSHOT_USER_MASK		\
++	 NEXT3_SNAPFILE_TAGGED_FL
++
++/* snapshot flags modifiable by chattr */
++#define NEXT3_FL_SNAPSHOT_RW_MASK		\
++	(NEXT3_FL_SNAPSHOT_USER_MASK|NEXT3_SNAPFILE_FL| \
++	 NEXT3_SNAPFILE_LIST_FL|NEXT3_SNAPFILE_ENABLED_FL)
++
++/* snapshot persistent read-only flags */
++#define NEXT3_FL_SNAPSHOT_RO_MASK		\
++	 (NEXT3_SNAPFILE_DELETED_FL|NEXT3_SNAPFILE_SHRUNK_FL)
++
++/* non-persistent snapshot status flags */
++#define NEXT3_FL_SNAPSHOT_DYN_MASK		\
++	(NEXT3_SNAPFILE_LIST_FL|NEXT3_SNAPFILE_ENABLED_FL| \
++	 NEXT3_SNAPFILE_ACTIVE_FL|NEXT3_SNAPFILE_INUSE_FL| \
++	 NEXT3_SNAPFILE_OPEN_FL|NEXT3_SNAPFILE_TAGGED_FL)
++
++/* snapshot flags visible to lsattr */
++#define NEXT3_FL_SNAPSHOT_MASK			\
++	(NEXT3_FL_SNAPSHOT_DYN_MASK|NEXT3_SNAPFILE_FL| \
++	 NEXT3_FL_SNAPSHOT_RO_MASK)
++
++/* User visible flags */
++#define NEXT3_FL_USER_VISIBLE		(NEXT3_FL_SNAPSHOT_MASK|0x0007DFFF)
++/* User modifiable flags */
++#define NEXT3_FL_USER_MODIFIABLE	(NEXT3_FL_SNAPSHOT_RW_MASK|0x000380FF)
+ 
+ /* Flags that should be inherited by new inodes from their parent. */
+ #define NEXT3_FL_INHERITED (NEXT3_SECRM_FL | NEXT3_UNRM_FL | NEXT3_COMPR_FL |\
+-			   NEXT3_SYNC_FL | NEXT3_IMMUTABLE_FL | NEXT3_APPEND_FL |\
+-			   NEXT3_NODUMP_FL | NEXT3_NOATIME_FL | NEXT3_COMPRBLK_FL|\
+-			   NEXT3_NOCOMPR_FL | NEXT3_JOURNAL_DATA_FL |\
+-			   NEXT3_NOTAIL_FL | NEXT3_DIRSYNC_FL)
++		NEXT3_SYNC_FL | NEXT3_IMMUTABLE_FL | NEXT3_APPEND_FL |\
++		NEXT3_NODUMP_FL | NEXT3_NOATIME_FL | NEXT3_COMPRBLK_FL|\
++		NEXT3_NOCOMPR_FL | NEXT3_JOURNAL_DATA_FL |\
++		NEXT3_NOTAIL_FL | NEXT3_DIRSYNC_FL | NEXT3_SNAPFILE_FL)
++
+ 
+ /* Flags that are appropriate for regular files (all but dir-specific ones). */
+ #define NEXT3_REG_FLMASK (~(NEXT3_DIRSYNC_FL | NEXT3_TOPDIR_FL))
+@@ -404,6 +445,8 @@ struct next3_inode {
+ #define EXT2_FLAGS_SIGNED_HASH		0x0001  /* Signed dirhash in use */
+ #define EXT2_FLAGS_UNSIGNED_HASH	0x0002  /* Unsigned dirhash in use */
+ #define EXT2_FLAGS_TEST_FILESYS		0x0004	/* to test development code */
++#define NEXT3_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
++#define NEXT3_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
+ 
+ #define NEXT3_SET_FLAGS(sb,mask) \
+ 	NEXT3_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
+@@ -563,7 +606,15 @@ struct next3_super_block {
+ 	__u8	s_reserved_char_pad2;
+ 	__le16  s_reserved_pad;
+ 	__le64	s_kbytes_written;	/* nr of lifetime kilobytes written */
+-	__u32   s_reserved[160];        /* Padding to the end of the block */
++	/*
++	 * Snapshots support valid if NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT
++	 * is set.
++	 */
++/*180*/	__le32	s_snapshot_inum;	/* Inode number of active snapshot */
++	__le32	s_snapshot_id;		/* Sequential ID of active snapshot */
++	__le64	s_snapshot_r_blocks_count; /* Reserved for active snapshot */
++	__le32	s_snapshot_list;	/* start of list of snapshot inodes */
++	__u32	s_reserved[155];	/* Padding to the end of the block */
+ };
+ 
+ #ifdef __KERNEL__
+@@ -594,6 +645,7 @@ static inline int next3_valid_inum(struc
+ #endif
+ 
+ #define NEXT_ORPHAN(inode) NEXT3_I(inode)->i_dtime
++#define NEXT_SNAPSHOT(inode) (NEXT3_I(inode)->i_next_snapshot_ino)
+ 
+ /*
+  * Codes for operating systems
+@@ -644,10 +696,12 @@ static inline int next3_valid_inum(struc
+ #define NEXT3_FEATURE_COMPAT_EXT_ATTR		0x0008
+ #define NEXT3_FEATURE_COMPAT_RESIZE_INODE	0x0010
+ #define NEXT3_FEATURE_COMPAT_DIR_INDEX		0x0020
++#define NEXT3_FEATURE_COMPAT_EXCLUDE_INODE	0x0080 /* Has exclude inode */
+ 
+ #define NEXT3_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
+ #define NEXT3_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
+ #define NEXT3_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
++#define NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT	0x0080 /* Next3 has snapshots */
+ 
+ #define NEXT3_FEATURE_INCOMPAT_COMPRESSION	0x0001
+ #define NEXT3_FEATURE_INCOMPAT_FILETYPE		0x0002
+@@ -661,6 +715,7 @@ static inline int next3_valid_inum(struc
+ 					 NEXT3_FEATURE_INCOMPAT_META_BG)
+ #define NEXT3_FEATURE_RO_COMPAT_SUPP	(NEXT3_FEATURE_RO_COMPAT_SPARSE_SUPER| \
+ 					 NEXT3_FEATURE_RO_COMPAT_LARGE_FILE| \
++					 NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
+ 					 NEXT3_FEATURE_RO_COMPAT_BTREE_DIR)
+ 
+ /*
+diff -Nuarp a/fs/next3/next3_i.h b/fs/next3/next3_i.h
+--- a/fs/next3/next3_i.h	2010-07-26 09:22:07.164992292 +0300
++++ b/fs/next3/next3_i.h	2010-07-26 09:22:06.654984575 +0300
+@@ -106,6 +106,14 @@ struct next3_inode_info {
+ 
+ 	struct list_head i_orphan;	/* unlinked but open inodes */
+ 
++#define i_snaplist i_orphan
++	/*
++	 * In-memory snapshot list overrides i_orphan to link snapshot inodes,
++	 * but unlike the real orphan list, the next snapshot inode number
++	 * is stored in i_next_snapshot_ino and not in i_dtime
++	 */
++	__u32	i_next_snapshot_ino;
++
+ 	/*
+ 	 * i_disksize keeps track of what the inode size is ON DISK, not
+ 	 * in memory.  During truncate, i_size is set to the new size by
+diff -Nuarp a/fs/next3/next3_sb.h b/fs/next3/next3_sb.h
+--- a/fs/next3/next3_sb.h	2010-07-26 09:22:07.174995800 +0300
++++ b/fs/next3/next3_sb.h	2010-07-26 09:22:06.664988775 +0300
+@@ -23,10 +23,28 @@
+ #include <linux/wait.h>
+ #include <linux/blockgroup_lock.h>
+ #include <linux/percpu_counter.h>
++#include <linux/mutex.h>
+ #endif
+ #include <linux/rbtree.h>
+ 
+ /*
++ * third extended-fs per-block-group data in memory
++ */
++struct next3_group_info {
++	/*
++	 * Fast cache for location of exclude/COW bitmap blocks.
++	 * Exclude bitmap blocks are allocated offline by mke2fs/tune2fs.
++	 * Location of exclude bitmap blocks is read from exclude inode to
++	 * initialize bg_exclude_bitmap on mount time.
++	 * bg_cow_bitmap is reset to zero on mount time and on every snapshot
++	 * take and initialized lazily on first block group write access.
++	 * bg_cow_bitmap is protected by sb_bgl_lock().
++	 */
++	unsigned long bg_exclude_bitmap;/* Exclude bitmap cache */
++	unsigned long bg_cow_bitmap;	/* COW bitmap cache */
++};
++
++/*
+  * third extended-fs super-block data in memory
+  */
+ struct next3_sb_info {
+@@ -74,6 +92,9 @@ struct next3_sb_info {
+ 	struct inode * s_journal_inode;
+ 	struct journal_s * s_journal;
+ 	struct list_head s_orphan;
++	struct next3_group_info *s_group_info;	/* [ sb_bgl_lock ] */
++	struct mutex s_snapshot_mutex;		/* protects 2 fields below: */
++	struct inode *s_active_snapshot;	/* [ s_snapshot_mutex ] */
+ 	unsigned long s_commit_interval;
+ 	struct block_device *journal_bdev;
+ #ifdef CONFIG_JBD_DEBUG
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:22:07.194993741 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:22:06.684987057 +0300
+@@ -14,6 +14,79 @@
+ 
+ #include "snapshot.h"
+ 
++/*
++ * General snapshot locking semantics:
++ *
++ * The snapshot_mutex:
++ * -------------------
++ * The majority of the code in the snapshot_{ctl,debug}.c files is called from
++ * very few entry points in the code:
++ * 1. {init,exit}_next3_fs() - calls {init,exit}_next3_snapshot() under BGL.
++ * 2. next3_{fill,put}_super() - calls next3_snapshot_{load,destroy}() under
++ *    VFS sb_lock, while f/s is not accessible to users.
++ * 3. next3_ioctl() - only place that takes snapshot_mutex (after i_mutex)
++ *    and only entry point to snapshot control functions below.
++ *
++ * From the rules above it follows that all fields accessed inside
++ * snapshot_{ctl,debug}.c are protected by one of the following:
++ * - snapshot_mutex during snapshot control operations.
++ * - VFS sb_lock during f/s mount/umount time.
++ * - Big kernel lock during module init time.
++ * Needless to say, either of the above is sufficient.
++ * So if a field is accessed only inside snapshot_*.c it should be safe.
++ *
++ * The transaction handle:
++ * -----------------------
++ * Snapshot COW code (in snapshot.c) is called from block access hooks during a
++ * transaction (with a transaction handle). This guaranties safe read access to
++ * s_active_snapshot, without taking snapshot_mutex, because the latter is only
++ * changed under journal_lock_updates() (while no transaction handles exist).
++ *
++ * The transaction handle is a per task struct, so there is no need to protect
++ * fields on that struct (i.e. h_cowing, h_cow_*).
++ */
++
++/*
++ * next3_snapshot_set_active - set the current active snapshot
++ * First, if current active snapshot exists, it is deactivated.
++ * Then, if @inode is not NULL, the active snapshot is set to @inode.
++ *
++ * Called from next3_snapshot_take() and next3_snapshot_update() under
++ * journal_lock_updates() and snapshot_mutex.
++ * Called from next3_snapshot_{load,destroy}() under sb_lock.
++ *
++ * Returns 0 on success and <0 on error.
++ */
++static int next3_snapshot_set_active(struct super_block *sb,
++		struct inode *inode)
++{
++	struct inode *old = NEXT3_SB(sb)->s_active_snapshot;
++
++	if (old == inode)
++		return 0;
++
++	/* add new active snapshot reference */
++	if (inode && !igrab(inode))
++		return -EIO;
++
++	/* point of no return - replace old with new snapshot */
++	if (old) {
++		NEXT3_I(old)->i_flags &= ~NEXT3_SNAPFILE_ACTIVE_FL;
++		snapshot_debug(1, "snapshot (%u) deactivated\n",
++			       old->i_generation);
++		/* remove old active snapshot reference */
++		iput(old);
++	}
++	if (inode) {
++		NEXT3_I(inode)->i_flags |=
++			NEXT3_SNAPFILE_ACTIVE_FL|NEXT3_SNAPFILE_LIST_FL;
++		snapshot_debug(1, "snapshot (%u) activated\n",
++			       inode->i_generation);
++	}
++	NEXT3_SB(sb)->s_active_snapshot = inode;
++
++	return 0;
++}
+ 
+ #define next3_snapshot_reset_bitmap_cache(sb, init) 0
+ 
+@@ -26,12 +99,160 @@
+ #define next3_snapshot_init_bitmap_cache(sb, create)	\
+ 		next3_snapshot_reset_bitmap_cache(sb, 1)
+ 
++/*
++ * next3_snapshot_load - load the on-disk snapshot list to memory.
++ * Start with last (or active) snapshot and continue to older snapshots.
++ * If snapshot load fails before active snapshot, force read-only mount.
++ * If snapshot load fails after active snapshot, allow read-write mount.
++ * Called from next3_fill_super() under sb_lock during mount time.
++ *
++ * Return values:
++ * = 0 - on-disk snapshot list is empty or active snapshot loaded
++ * < 0 - error loading active snapshot
++ */
+ int next3_snapshot_load(struct super_block *sb, struct next3_super_block *es,
+ 		int read_only)
+ {
+-	return 0;
++	__le32 *ino_next = &es->s_snapshot_list;
++	__le32 active_ino = es->s_snapshot_inum;
++	int err, num = 0, snapshot_id = 0;
++	int has_snapshot = 1, has_active = 0;
++
++
++	if (!*ino_next && active_ino) {
++		/* snapshots list is empty and active snapshot exists */
++		if (!read_only)
++			/* reset list head to active snapshot */
++			*ino_next = active_ino;
++		/* try to load active snapshot */
++		ino_next = &es->s_snapshot_inum;
++	}
++
++	if (*ino_next && !NEXT3_HAS_RO_COMPAT_FEATURE(sb,
++				NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT)) {
++		/*
++		 * When mounting an ext3 formatted volume as next3, the
++		 * HAS_SNAPSHOT flag is set on first snapshot_take()
++		 * and after that the volume can no longer be mounted
++		 * as rw ext3 (only rw next3 or ro ext3/ext2).
++		 * We should never get here if the file system is consistent,
++		 * but if we find a last_snapshot inode, we try to load it.
++		 * If we succeed, we will fix the missing HAS_SNAPSHOT flag
++		 * and if we fail we will clear the last_snapshot field and
++		 * allow read-write mount.
++		 */
++		snapshot_debug(1, "warning: has_snapshot feature is not set and"
++			       " last snapshot found (%u). trying to load it\n",
++			       le32_to_cpu(*ino_next));
++		has_snapshot = 0;
++	}
++
++	/* init COW bitmap and exclude bitmap cache */
++	err = next3_snapshot_init_bitmap_cache(sb, !read_only);
++	if (err)
++		return err;
++
++	while (*ino_next) {
++		struct inode *inode;
++
++		inode = next3_orphan_get(sb, le32_to_cpu(*ino_next));
++		if (IS_ERR(inode) || !next3_snapshot_file(inode)) {
++			if (has_active || !has_snapshot) {
++				/* active snapshot was loaded or not found */
++				snapshot_debug(1,
++					"warning: failed to load snapshot "
++					"(ino=%u) after snapshot (%d) - "
++					"terminating snapshots list!\n",
++					le32_to_cpu(*ino_next), snapshot_id);
++				/* reset list head and allow read-write mount */
++				*ino_next = 0;
++				break;
++			} else if (num == 0 && *ino_next != active_ino) {
++				/* failed to load last non-active snapshot */
++				if (!read_only)
++					/* reset list head to active snapshot */
++					*ino_next = active_ino;
++				/* try to load active snapshot */
++				ino_next = &es->s_snapshot_inum;
++				continue;
++			}
++			err = -EIO;
++			break;
++		}
++
++		snapshot_id = inode->i_generation;
++		snapshot_debug(1, "snapshot (%d) loaded\n",
++			       snapshot_id);
++		num++;
++
++		if (!has_snapshot) {
++			NEXT3_SET_RO_COMPAT_FEATURE(sb,
++				    NEXT3_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
++			snapshot_debug(1, "added missing has_snapshot "
++				       "flag!\n");
++			has_snapshot = 1;
++		}
++
++		if (!has_active && *ino_next == active_ino) {
++			/* active snapshot was loaded */
++			err = next3_snapshot_set_active(sb, inode);
++			if (err)
++				break;
++			has_active = 1;
++		}
++
++		iput(inode);
++		break;
++	}
++
++	if (err) {
++		/* failed to load active snapshot */
++		snapshot_debug(1, "warning: failed to load "
++				"active snapshot (ino=%u) - "
++				"forcing read-only mount!\n",
++				le32_to_cpu(active_ino));
++		/* force read-only mount */
++		return read_only ? 0 : err;
++	}
++
++	if (num > 0) {
++		err = next3_snapshot_update(sb, 0, read_only);
++		snapshot_debug(1, "%d snapshots loaded\n", num);
++	}
++	return err;
+ }
+ 
++/*
++ * next3_snapshot_destroy() releases the in-memory snapshot list
++ * Called from next3_put_super() under sb_lock during umount time.
++ * This function cannot fail.
++ */
+ void next3_snapshot_destroy(struct super_block *sb)
+ {
++	/* deactivate in-memory active snapshot - cannot fail */
++	(void) next3_snapshot_set_active(sb, NULL);
++}
++
++/*
++ * next3_snapshot_update - iterate snapshot list and update snapshots status.
++ * @sb: handle to file system super block.
++ * @cleanup: if true, shrink/merge/cleanup all snapshots marked for deletion.
++ * @read_only: if true, don't remove snapshot after failed take.
++ *
++ * Called from next3_ioctl() under snapshot_mutex.
++ * Called from snapshot_load() under sb_lock with @cleanup=0.
++ * Returns 0 on success and <0 on error.
++ */
++int next3_snapshot_update(struct super_block *sb, int cleanup, int read_only)
++{
++	struct inode *active_snapshot = next3_snapshot_has_active(sb);
++	int err = 0;
++
++	BUG_ON(read_only && cleanup);
++	if (active_snapshot)
++		NEXT3_I(active_snapshot)->i_flags |=
++			NEXT3_SNAPFILE_ACTIVE_FL|NEXT3_SNAPFILE_LIST_FL;
++
++
++	return err;
+ }
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:22:07.194993741 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:22:06.694987819 +0300
+@@ -232,20 +232,79 @@ extern next3_fsblk_t next3_get_inode_blo
+ 
+ /* super.c */
+ 
++/* tests if @inode is a snapshot file */
++static inline int next3_snapshot_file(struct inode *inode)
++{
++	if (!S_ISREG(inode->i_mode))
++		/* a snapshots directory */
++		return 0;
++	return NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_FL;
++}
++
++/* tests if @inode is on the on-disk snapshot list */
++static inline int next3_snapshot_list(struct inode *inode)
++{
++	return NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_LIST_FL;
++}
+ 
+ 
++/*
++ * next3_snapshot_excluded():
++ * Checks if the file should be excluded from snapshot.
++ *
++ * Returns 0 for normal file.
++ * Returns > 0 for 'excluded' file.
++ * Returns < 0 for 'ignored' file (stonger than 'excluded').
++ *
++ * Excluded and ignored file blocks are not moved to snapshot.
++ * Ignored file metadata blocks are not COWed to snapshot.
++ * Excluded file metadata blocks are zeroed in the snapshot file.
++ * XXX: Excluded files code is experimental,
++ *      but ignored files code isn't.
++ */
++static inline int next3_snapshot_excluded(struct inode *inode)
++{
++	/* directory blocks and global filesystem blocks cannot be 'excluded' */
++	if (!inode || !S_ISREG(inode->i_mode))
++		return 0;
++	/* snapshot files are 'ignored' */
++	if (next3_snapshot_file(inode))
++		return -1;
++	return 0;
++}
+ 
+ /*
+  * check if @inode data blocks should be moved-on-write
+  */
+ static inline int next3_snapshot_should_move_data(struct inode *inode)
+ {
++	if (next3_snapshot_excluded(inode))
++		return 0;
+ 	/* when a data block is journaled, it is already COWed as metadata */
+ 	if (next3_should_journal_data(inode))
+ 		return 0;
+ 	return 1;
+ }
+ 
++/*
++ * tests if the file system has an active snapshot and returns its inode.
++ * active snapshot is only changed under journal_lock_updates(),
++ * so it is safe to use the returned inode during a transaction.
++ */
++static inline struct inode *next3_snapshot_has_active(struct super_block *sb)
++{
++	return NEXT3_SB(sb)->s_active_snapshot;
++}
++
++/*
++ * tests if @inode is the current active snapshot.
++ * active snapshot is only changed under journal_lock_updates(),
++ * so the test result never changes during a transaction.
++ */
++static inline int next3_snapshot_is_active(struct inode *inode)
++{
++	return (inode == NEXT3_SB(inode->i_sb)->s_active_snapshot);
++}
+ 
+ 
+ 
+diff -Nuarp a/fs/next3/super.c b/fs/next3/super.c
+--- a/fs/next3/super.c	2010-07-26 09:22:07.144993346 +0300
++++ b/fs/next3/super.c	2010-07-26 09:22:06.634984932 +0300
+@@ -424,6 +424,10 @@ static void next3_put_super (struct supe
+ 	for (i = 0; i < sbi->s_gdb_count; i++)
+ 		brelse(sbi->s_group_desc[i]);
+ 	kfree(sbi->s_group_desc);
++	if (is_vmalloc_addr(sbi->s_group_info))
++		vfree(sbi->s_group_info);
++	else
++		kfree(sbi->s_group_info);
+ 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
+ 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
+ 	percpu_counter_destroy(&sbi->s_dirs_counter);
+@@ -1569,6 +1573,8 @@ static int next3_fill_super (struct supe
+ 	int blocksize;
+ 	int hblock;
+ 	int db_count;
++	unsigned long max_groups;
++	size_t size;
+ 	int i;
+ 	int needs_recovery;
+ 	int ret = -EINVAL;
+@@ -1864,6 +1870,21 @@ static int next3_fill_super (struct supe
+ 		printk(KERN_ERR "NEXT3-fs: group descriptors corrupted!\n");
+ 		goto failed_mount2;
+ 	}
++	/* We allocate both existing and potentially added groups */
++	max_groups = (db_count + le16_to_cpu(es->s_reserved_gdt_blocks)) <<
++		NEXT3_DESC_PER_BLOCK_BITS(sb);
++	size = max_groups * sizeof(struct next3_group_info);
++	sbi->s_group_info = kzalloc(size, GFP_KERNEL);
++	if (sbi->s_group_info == NULL) {
++		sbi->s_group_info = vmalloc(size);
++		if (sbi->s_group_info)
++			memset(sbi->s_group_info, 0, size);
++	}
++	if (sbi->s_group_info == NULL) {
++		printk (KERN_ERR "NEXT3-fs: not enough memory for "
++				"%lu max groups\n", max_groups);
++		goto failed_mount2;
++	}
+ 	sbi->s_gdb_count = db_count;
+ 	get_random_bytes(&sbi->s_next_generation, sizeof(u32));
+ 	spin_lock_init(&sbi->s_next_gen_lock);
+@@ -1907,6 +1928,8 @@ static int next3_fill_super (struct supe
+ 	sb->dq_op = &next3_quota_operations;
+ #endif
+ 	INIT_LIST_HEAD(&sbi->s_orphan); /* unlinked but open files */
++	mutex_init(&sbi->s_snapshot_mutex);
++	sbi->s_active_snapshot = NULL;
+ 
+ 	sb->s_root = NULL;
+ 
+@@ -2028,6 +2051,12 @@ failed_mount3:
+ 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
+ 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
+ 	percpu_counter_destroy(&sbi->s_dirs_counter);
++	if (sbi->s_group_info) {
++		if (is_vmalloc_addr(sbi->s_group_info))
++			vfree(sbi->s_group_info);
++		else
++			kfree(sbi->s_group_info);
++	}
+ failed_mount2:
+ 	for (i = 0; i < db_count; i++)
+ 		brelse(sbi->s_group_desc[i]);

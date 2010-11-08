@@ -1,0 +1,79 @@
+===next3_snapshot_file_store.patch===
+
+next3: snapshot file - store on disk
+
+Snapshot inode is stored differently in memory and on disk.
+During store and load of snapshot inode, some of the inode flags
+and fields are converted.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:22:05.594970214 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:22:05.054961807 +0300
+@@ -3015,6 +3015,29 @@ struct inode *next3_iget(struct super_bl
+ 	 */
+ 	for (block = 0; block < NEXT3_N_BLOCKS; block++)
+ 		ei->i_data[block] = raw_inode->i_block[block];
++
++	if (next3_snapshot_file(inode)) {
++		ei->i_next_snapshot_ino =
++			le32_to_cpu(raw_inode->i_next_snapshot);
++		/*
++		 * Dynamic snapshot flags are not stored on-disk, so
++		 * at this point, we only know that this inode has the
++		 * 'snapfile' flag, but we don't know if it is on the list.
++		 * snapshot_load() loads the on-disk snapshot list to memory
++		 * and snapshot_update() flags the snapshots on the list.
++		 * 'detached' snapshot files will not be accessible to user.
++		 * 'detached' snapshot files are a by-product of detaching the
++		 * on-disk snapshot list head with tune2fs -O ^has_snapshot.
++		 */
++		ei->i_flags &= ~NEXT3_FL_SNAPSHOT_DYN_MASK;
++		/*
++		 * snapshot volume size is stored in i_disksize.
++		 * in-memory i_size of snapshot files is set to 0 (disabled).
++		 * enabling a snapshot is setting i_size to i_disksize.
++		 */
++		SNAPSHOT_SET_DISABLED(inode);
++	}
++
+ 	INIT_LIST_HEAD(&ei->i_orphan);
+ 
+ 	if (inode->i_ino >= NEXT3_FIRST_INO(inode->i_sb) + 1 &&
+@@ -3186,6 +3209,13 @@ static int next3_do_update_inode(handle_
+ 	if (ei->i_extra_isize)
+ 		raw_inode->i_extra_isize = cpu_to_le16(ei->i_extra_isize);
+ 
++	if (next3_snapshot_file(inode)) {
++		raw_inode->i_next_snapshot =
++			cpu_to_le32(ei->i_next_snapshot_ino);
++		/* dynamic snapshot flags are not stored on-disk */
++		raw_inode->i_flags &= cpu_to_le32(~NEXT3_FL_SNAPSHOT_DYN_MASK);
++	}
++
+ 	BUFFER_TRACE(bh, "call next3_journal_dirty_metadata");
+ 	rc = next3_journal_dirty_metadata(handle, bh);
+ 	if (!err)
+diff -Nuarp a/fs/next3/next3.h b/fs/next3/next3.h
+--- a/fs/next3/next3.h	2010-07-26 09:22:05.644971194 +0300
++++ b/fs/next3/next3.h	2010-07-26 09:22:05.104963101 +0300
+@@ -360,7 +360,7 @@ struct next3_inode {
+ 	__le32	i_flags;	/* File flags */
+ 	union {
+ 		struct {
+-			__u32  l_i_reserved1;
++			__le32	l_i_next_snapshot; /* On-disk snapshot list */
+ 		} linux1;
+ 		struct {
+ 			__u32  h_i_translator;
+@@ -405,7 +405,7 @@ struct next3_inode {
+ #define i_size_high	i_dir_acl
+ 
+ #if defined(__KERNEL__) || defined(__linux__)
+-#define i_reserved1	osd1.linux1.l_i_reserved1
++#define i_next_snapshot	osd1.linux1.l_i_next_snapshot
+ #define i_frag		osd2.linux2.l_i_frag
+ #define i_fsize		osd2.linux2.l_i_fsize
+ #define i_uid_low	i_uid
