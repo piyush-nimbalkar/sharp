@@ -1,0 +1,450 @@
+==next3_snapshot_cleanup.patch==
+
+next3: snapshot cleanup
+
+Cleanup snapshots list and reclaim unused blocks of deleted snapshots.
+Oldest snapshot can be removed from list and its blocks can be freed.
+Non-oldest snapshots have to be shrunk and merged before they can be
+removed from the list.  All snapshot blocks must be excluded in order
+to properly shrink/merge deleted old snapshots.
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:49.664726452 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:49.064712443 +0300
+@@ -520,6 +520,16 @@ static int next3_blks_to_allocate(Indire
+ 	return count;
+ }
+ 
++static void next3_free_data_cow(handle_t *handle, struct inode *inode,
++			   struct buffer_head *this_bh,
++			   __le32 *first, __le32 *last,
++			   const char *bitmap, int bit,
++			   int *pfreed_blocks, int *pblocks);
++
++#define next3_free_data(handle, inode, bh, first, last)		\
++	next3_free_data_cow(handle, inode, bh, first, last,		\
++			    NULL, 0, NULL, NULL)
++
+ /**
+  *	next3_alloc_blocks: multiple allocate blocks needed for a branch
+  *	@indirect_blks: the number of blocks need to allocate for indirect
+@@ -2535,11 +2545,32 @@ no_top:
+  * We release `count' blocks on disk, but (last - first) may be greater
+  * than `count' because there can be holes in there.
+  */
+-static void next3_clear_blocks(handle_t *handle, struct inode *inode,
++/*
++ * next3_clear_blocks_cow - Zero a number of block pointers (consult COW bitmap)
++ * @bitmap:	COW bitmap to consult when shrinking deleted snapshot
++ * @bit:	bit number representing the @first block
++ * @pblocks: 	pointer to counter of branch blocks
++ *
++ * If @pblocks is not NULL, don't free blocks, only update blocks counter and
++ * test that blocks are excluded.
++ */
++static void next3_clear_blocks_cow(handle_t *handle, struct inode *inode,
+ 		struct buffer_head *bh, next3_fsblk_t block_to_free,
+-		unsigned long count, __le32 *first, __le32 *last)
++		unsigned long count, __le32 *first, __le32 *last,
++		const char *bitmap, int bit, int *pblocks)
+ {
+ 	__le32 *p;
++
++	if (pblocks) {
++		/* test that blocks are excluded and update blocks counter */
++		next3_snapshot_test_excluded(handle, inode, block_to_free,
++						count);
++		if (is_handle_aborted(handle))
++			return;
++		*pblocks += count;
++		return;
++	}
++
+ 	if (try_to_extend_transaction(handle, inode)) {
+ 		if (bh) {
+ 			BUFFER_TRACE(bh, "call next3_journal_dirty_metadata");
+@@ -2566,6 +2597,9 @@ static void next3_clear_blocks(handle_t 
+ 	 */
+ 	for (p = first; p < last; p++) {
+ 		u32 nr = le32_to_cpu(*p);
++		if (nr && bitmap && next3_test_bit(bit + (p - first), bitmap))
++			/* don't free block used by older snapshot */
++			nr = 0;
+ 		if (nr) {
+ 			struct buffer_head *bh;
+ 
+@@ -2597,9 +2631,21 @@ static void next3_clear_blocks(handle_t 
+  * @this_bh will be %NULL if @first and @last point into the inode's direct
+  * block pointers.
+  */
+-static void next3_free_data(handle_t *handle, struct inode *inode,
++/*
++ * next3_free_data_cow - free a list of data blocks (consult COW bitmap)
++ * @bitmap:	COW bitmap to consult when shrinking deleted snapshot
++ * @bit:	bit number representing the @first block
++ * @pfreed_blocks:	return number of freed blocks
++ * @pblocks: 	pointer to counter of branch blocks
++ *
++ * If @pblocks is not NULL, don't free blocks, only update blocks counter and
++ * test that blocks are excluded.
++ */
++static void next3_free_data_cow(handle_t *handle, struct inode *inode,
+ 			   struct buffer_head *this_bh,
+-			   __le32 *first, __le32 *last)
++			   __le32 *first, __le32 *last,
++			   const char *bitmap, int bit,
++			   int *pfreed_blocks, int *pblocks)
+ {
+ 	next3_fsblk_t block_to_free = 0;    /* Starting block # of a run */
+ 	unsigned long count = 0;	    /* Number of blocks in the run */
+@@ -2611,6 +2657,9 @@ static void next3_free_data(handle_t *ha
+ 					       for current block */
+ 	int err;
+ 
++	if (pblocks)
++		/* we're not actually deleting any blocks */
++		this_bh = NULL;
+ 	if (this_bh) {				/* For indirect block */
+ 		BUFFER_TRACE(this_bh, "get_write_access");
+ 		err = next3_journal_get_write_access_inode(handle, inode,
+@@ -2623,6 +2672,11 @@ static void next3_free_data(handle_t *ha
+ 
+ 	for (p = first; p < last; p++) {
+ 		nr = le32_to_cpu(*p);
++		if (nr && bitmap && next3_test_bit(bit + (p - first), bitmap))
++			/* don't free block used by older snapshot */
++			nr = 0;
++		if (nr && pfreed_blocks)
++			++(*pfreed_blocks);
+ 		if (nr) {
+ 			/* accumulate blocks to free if they're contiguous */
+ 			if (count == 0) {
+@@ -2632,9 +2686,11 @@ static void next3_free_data(handle_t *ha
+ 			} else if (nr == block_to_free + count) {
+ 				count++;
+ 			} else {
+-				next3_clear_blocks(handle, inode, this_bh,
+-						  block_to_free,
+-						  count, block_to_free_p, p);
++				next3_clear_blocks_cow(handle, inode, this_bh,
++					       block_to_free, count,
++					       block_to_free_p, p, bitmap,
++					       bit + (block_to_free_p - first),
++					       pblocks);
+ 				/* we may have lost write_access on this_bh */
+ 				if (is_handle_aborted(handle))
+ 					return;
+@@ -2646,8 +2702,11 @@ static void next3_free_data(handle_t *ha
+ 	}
+ 
+ 	if (count > 0)
+-		next3_clear_blocks(handle, inode, this_bh, block_to_free,
+-				  count, block_to_free_p, p);
++		next3_clear_blocks_cow(handle, inode, this_bh,
++				block_to_free, count, block_to_free_p, p,
++				bitmap, bit + (block_to_free_p - first), pblocks);
++	if (pblocks)
++		return;
+ 	/* we may have lost write_access on this_bh */
+ 	if (is_handle_aborted(handle))
+ 		return;
+@@ -2685,9 +2744,17 @@ static void next3_free_data(handle_t *ha
+  *	stored as little-endian 32-bit) and updating @inode->i_blocks
+  *	appropriately.
+  */
+-static void next3_free_branches(handle_t *handle, struct inode *inode,
++/*
++ *	next3_free_branches_cow - free or exclude an array of branches
++ *	@pblocks: 	pointer to counter of branch blocks
++ *
++ *	If @pblocks is not NULL, don't free blocks, only update blocks counter
++ *	and test that blocks are excluded.
++ */
++void next3_free_branches_cow(handle_t *handle, struct inode *inode,
+ 			       struct buffer_head *parent_bh,
+-			       __le32 *first, __le32 *last, int depth)
++			       __le32 *first, __le32 *last, int depth,
++			       int *pblocks)
+ {
+ 	next3_fsblk_t nr;
+ 	__le32 *p;
+@@ -2695,6 +2762,9 @@ static void next3_free_branches(handle_t
+ 	if (is_handle_aborted(handle))
+ 		return;
+ 
++	if (pblocks)
++		/* we're not actually deleting any blocks */
++		parent_bh = NULL;
+ 	if (depth--) {
+ 		struct buffer_head *bh;
+ 		int addr_per_block = NEXT3_ADDR_PER_BLOCK(inode->i_sb);
+@@ -2720,10 +2790,20 @@ static void next3_free_branches(handle_t
+ 
+ 			/* This zaps the entire block.  Bottom up. */
+ 			BUFFER_TRACE(bh, "free child branches");
+-			next3_free_branches(handle, inode, bh,
+-					   (__le32*)bh->b_data,
+-					   (__le32*)bh->b_data + addr_per_block,
+-					   depth);
++			next3_free_branches_cow(handle, inode, bh,
++					(__le32 *)bh->b_data,
++					(__le32 *)bh->b_data + addr_per_block,
++					depth, pblocks);
++			if (pblocks) {
++				/* test that block is excluded and update
++				   blocks counter */
++				next3_snapshot_test_excluded(handle, inode,
++								nr, 1);
++				if (is_handle_aborted(handle))
++					return;
++				*pblocks += 1;
++				continue;
++			}
+ 
+ 			/*
+ 			 * We've probably journalled the indirect block several
+@@ -2790,7 +2870,8 @@ static void next3_free_branches(handle_t
+ 	} else {
+ 		/* We have reached the bottom of the tree. */
+ 		BUFFER_TRACE(parent_bh, "free data blocks");
+-		next3_free_data(handle, inode, parent_bh, first, last);
++		next3_free_data_cow(handle, inode, parent_bh, first, last,
++				    NULL, 0, NULL, pblocks);
+ 	}
+ }
+ 
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:21:49.754801051 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:21:49.154718888 +0300
+@@ -167,6 +167,7 @@ static int next3_snapshot_enable(struct 
+ static int next3_snapshot_disable(struct inode *inode);
+ static int next3_snapshot_create(struct inode *inode);
+ static int next3_snapshot_delete(struct inode *inode);
++static int next3_snapshot_exclude(handle_t *handle, struct inode *inode);
+ 
+ /*
+  * next3_snapshot_get_flags() check snapshot state
+@@ -222,6 +223,11 @@ int next3_snapshot_set_flags(handle_t *h
+ 	}
+ #endif
+ 
++	if (!(flags & NEXT3_SNAPFILE_FL))
++		/* test snapshot blocks are excluded on chattr -x */
++		err = next3_snapshot_exclude(handle, inode);
++	if (err)
++		goto out;
+ 
+ 	if ((flags ^ oldflags) & NEXT3_SNAPFILE_ENABLED_FL) {
+ 		/* enabled/disabled the snapshot during transaction */
+@@ -943,6 +949,82 @@ out_err:
+ 	return err;
+ }
+ 
++/*
++ * next3_snapshot_clean() "cleans" snapshot file blocks in 1 of 2 ways:
++ * 1. from next3_snapshot_remove() with @cleanup=1 to free snapshot file
++ *    blocks, before removing snapshot file from snapshots list.
++ * 2. from next3_snapshot_exclude() with @cleanup=0 to mark snapshot file
++ *    blocks in exclude bitmap.
++ * Called under snapshot_mutex.
++ *
++ * Return values:
++ * > 0 - no. of blocks in snapshot file (@cleanup=0)
++ * = 0 - successful cleanup (@cleanup=1)
++ * < 0 - error
++ */
++static int next3_snapshot_clean(handle_t *handle, struct inode *inode,
++		int cleanup)
++{
++	struct next3_inode_info *ei = NEXT3_I(inode);
++	int i, nblocks = 0;
++	int *pblocks = (cleanup ? NULL : &nblocks);
++
++	if (!next3_snapshot_list(inode)) {
++		snapshot_debug(1, "next3_snapshot_clean() called with "
++			       "snapshot file (ino=%lu) not on list\n",
++			       inode->i_ino);
++		return -EINVAL;
++	}
++
++	if (ei->i_flags & NEXT3_SNAPFILE_ACTIVE_FL) {
++		snapshot_debug(1, "clean of active snapshot (%u) "
++			       "is not allowed.\n",
++			       inode->i_generation);
++		return -EPERM;
++	}
++
++	/*
++	 * A very simplified version of next3_truncate() for snapshot files.
++	 * A non-active snapshot file never allocates new blocks and only frees
++	 * blocks under snapshot_mutex, so no need to take truncate_mutex here.
++	 * No need to add inode to orphan list for post crash truncate, because
++	 * snapshot is still on the snapshot list and marked for deletion.
++	 */
++	for (i = NEXT3_DIND_BLOCK; i < NEXT3_SNAPSHOT_N_BLOCKS; i++) {
++		int depth = (i == NEXT3_DIND_BLOCK ? 2 : 3);
++		if (!ei->i_data[i])
++			continue;
++		next3_free_branches_cow(handle, inode, NULL,
++				ei->i_data+i, ei->i_data+i+1, depth, pblocks);
++		if (cleanup)
++			ei->i_data[i] = 0;
++	}
++	return nblocks;
++}
++
++/*
++ * next3_snapshot_exclude() marks snapshot file blocks in exclude bitmap.
++ * Snapshot file blocks should already be excluded if everything works properly.
++ * This function is used only to verify the correctness of exclude bitmap.
++ * Called under i_mutex and snapshot_mutex.
++ */
++static int next3_snapshot_exclude(handle_t *handle, struct inode *inode)
++{
++	int err;
++
++	/* extend small transaction started in next3_ioctl() */
++	err = extend_or_restart_transaction(handle, NEXT3_MAX_TRANS_DATA);
++	if (err)
++		return err;
++
++	err = next3_snapshot_clean(handle, inode, 0);
++	if (err < 0)
++		return err;
++
++	snapshot_debug(1, "snapshot (%u) is clean (%d blocks)\n",
++			inode->i_generation, err);
++	return 0;
++}
+ 
+ /*
+  * next3_snapshot_enable() enables snapshot mount
+@@ -1086,6 +1168,16 @@ static int next3_snapshot_remove(struct 
+ 	}
+ 	sbi = NEXT3_SB(inode->i_sb);
+ 
++	err = next3_snapshot_clean(handle, inode, 1);
++	if (err)
++		goto out_handle;
++
++	/* reset snapshot inode size */
++	i_size_write(inode, 0);
++	ei->i_disksize = 0;
++	err = next3_mark_inode_dirty(handle, inode);
++	if (err)
++		goto out_handle;
+ 
+ 	err = extend_or_restart_transaction_inode(handle, inode, 2);
+ 	if (err)
+@@ -1134,6 +1226,33 @@ out_err:
+ 
+ 
+ 
++/*
++ * next3_snapshot_cleanup - shrink/merge/remove snapshot marked for deletion
++ * @inode - inode in question
++ * @used_by - latest non-deleted snapshot
++ * @deleted - true if snapshot is marked for deletion and not active
++ * @need_shrink - counter of deleted snapshots to shrink
++ * @need_merge - counter of deleted snapshots to merge
++ *
++ * Deleted snapshot with no older non-deleted snapshot - remove from list
++ * Deleted snapshot with no older enabled snapshot - add to merge count
++ * Deleted snapshot with older enabled snapshot - add to shrink count
++ * Non-deleted snapshot - shrink and merge deleted snapshots group
++ *
++ * Called from next3_snapshot_update() under snapshot_mutex.
++ * Returns 0 on success and <0 on error.
++ */
++static int next3_snapshot_cleanup(struct inode *inode, struct inode *used_by,
++		int deleted, int *need_shrink, int *need_merge)
++{
++	int err = 0;
++
++	if (deleted && !used_by)
++		/* remove permanently unused deleted snapshot */
++		return next3_snapshot_remove(inode);
++
++	return 0;
++}
+ 
+ /*
+  * Snapshot constructor/destructor
+@@ -1570,6 +1689,8 @@ int next3_snapshot_update(struct super_b
+ 	int found_active = 0;
+ 	int found_enabled = 0;
+ 	struct list_head *prev;
++	int need_shrink = 0;
++	int need_merge = 0;
+ 	int err = 0;
+ 
+ 	BUG_ON(read_only && cleanup);
+@@ -1625,9 +1746,9 @@ update_snapshot:
+ 		/* snapshot is not in use by older enabled snapshots */
+ 		ei->i_flags &= ~NEXT3_SNAPFILE_INUSE_FL;
+ 
+-	if (cleanup && deleted && !used_by)
+-		/* remove permanently unused deleted snapshot */
+-		err = next3_snapshot_remove(inode);
++	if (cleanup)
++		err = next3_snapshot_cleanup(inode, used_by, deleted,
++				&need_shrink, &need_merge);
+ 
+ 	if (!deleted) {
+ 		if (!found_active)
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:21:49.764792112 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:21:49.164784125 +0300
+@@ -277,6 +277,34 @@ static inline int next3_snapshot_get_del
+ 	return next3_snapshot_move(handle, inode, block, count, 1);
+ }
+ 
++extern int next3_snapshot_test_and_exclude(const char *where, handle_t *handle,
++		struct super_block *sb, next3_fsblk_t block, int maxblocks,
++		int exclude);
++
++/*
++ * next3_snapshot_exclude_blocks() - exclude snapshot blocks
++ *
++ * Called from next3_snapshot_test_and_{cow,move}() when copying/moving
++ * blocks to active snapshot.
++ *
++ * On error handle is aborted.
++ */
++#define next3_snapshot_exclude_blocks(handle, sb, block, count) \
++	next3_snapshot_test_and_exclude(__func__, (handle), (sb), \
++			(block), (count), 1)
++
++/*
++ * next3_snapshot_test_excluded() - test that snapshot blocks are excluded
++ *
++ * Called from next3_snapshot_clean(), next3_free_branches_cow() and
++ * next3_clear_blocks_cow() under snapshot_mutex.
++ *
++ * On error handle is aborted.
++ */
++#define next3_snapshot_test_excluded(handle, inode, block, count) \
++	next3_snapshot_test_and_exclude(__func__, (handle), (inode)->i_sb, \
++			(block), (count), 0)
++
+ extern int next3_snapshot_get_read_access(struct super_block *sb,
+ 					  struct buffer_head *bh);
+ extern int next3_snapshot_get_inode_access(handle_t *handle,
+@@ -326,6 +354,14 @@ extern int next3_inode_list_del(handle_t
+ extern next3_fsblk_t next3_get_inode_block(struct super_block *sb,
+ 					   unsigned long ino,
+ 					   struct next3_iloc *iloc);
++extern void next3_free_branches_cow(handle_t *handle, struct inode *inode,
++				    struct buffer_head *parent_bh,
++				    __le32 *first, __le32 *last,
++				    int depth, int *pblocks);
++
++#define next3_free_branches(handle, inode, bh, first, last, depth)	\
++	next3_free_branches_cow((handle), (inode), (bh),		\
++				(first), (last), (depth), NULL)
+ 
+ /* super.c */
+ struct kstatfs;

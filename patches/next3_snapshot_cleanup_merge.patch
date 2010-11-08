@@ -1,0 +1,323 @@
+===next3_snapshot_cleanup_merge.patch===
+
+next3: snapshot cleanup - merge shrunk snapshots
+
+Move blocks of deleted and shrunk snapshots to an older non-deleted
+and disabled snapshot.  Merging helps removing snapshots from list
+while older snapshots are not currently in use (disabled).
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:48.464707544 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:47.934701529 +0300
+@@ -750,6 +750,164 @@ cleanup:
+ 	return err;
+ }
+ 
++/*
++ * next3_move_branches - move an array of branches
++ * @handle: JBD handle for this transaction
++ * @src:	inode we're moving blocks from
++ * @ps:		array of src block numbers
++ * @pd:		array of dst block numbers
++ * @depth:	depth of the branches to move
++ * @count:	max branches to move
++ * @pmoved:	pointer to counter of moved blocks
++ *
++ * We move whole branches from src to dst, skipping the holes in src
++ * and stopping at the first branch that needs to be merged at higher level.
++ * Called from next3_snapshot_merge_blocks() under snapshot_mutex.
++ * Returns the number of merged branches.
++ */
++static int next3_move_branches(handle_t *handle, struct inode *src,
++		__le32 *ps, __le32 *pd, int depth,
++		int count, int *pmoved)
++{
++	int i;
++
++	for (i = 0; i < count; i++, ps++, pd++) {
++		__le32 s = *ps, d = *pd;
++		if (s && d && depth)
++			/* can't move or skip entire branch, need to merge
++			   these 2 branches */
++			break;
++		if (!s || d)
++			/* skip holes is src and mapped data blocks in dst */
++			continue;
++
++		/* count moved blocks (and verify they are excluded) */
++		next3_free_branches_cow(handle, src, NULL,
++				ps, ps+1, depth, pmoved);
++
++		/* move the entire branch from src to dst inode */
++		*pd = s;
++		*ps = 0;
++	}
++	return i;
++}
++
++/*
++ * next3_snapshot_merge_blocks - merge blocks from @src to @dst inode
++ * @handle: JBD handle for this transaction
++ * @src:	inode we're merging blocks from
++ * @dst:	inode we're merging blocks to
++ * @iblock:	inode offset to first data block to merge
++ * @maxblocks:	inode range of data blocks to merge
++ *
++ * Merges @maxblocks data blocks starting at @iblock and all the indirect
++ * blocks that map them.
++ * Called from next3_snapshot_merge() under snapshot_mutex.
++ * Returns the merged blocks range and <0 on error.
++ */
++int next3_snapshot_merge_blocks(handle_t *handle,
++		struct inode *src, struct inode *dst,
++		sector_t iblock, unsigned long maxblocks)
++{
++	Indirect S[4], D[4], *pS, *pD;
++	int offsets[4];
++	int ks, kd, depth, count;
++	int ptrs = NEXT3_ADDR_PER_BLOCK(src->i_sb);
++	int ptrs_bits = NEXT3_ADDR_PER_BLOCK_BITS(src->i_sb);
++	int data_ptrs_bits, data_ptrs_mask, max_ptrs;
++	int moved = 0, err;
++
++	depth = next3_block_to_path(src, iblock, offsets, NULL);
++	if (depth < 3)
++		/* snapshot blocks are mapped with double and tripple
++		   indirect blocks */
++		return -1;
++
++	memset(D, 0, sizeof(D));
++	memset(S, 0, sizeof(S));
++	pD = next3_get_branch(dst, depth, offsets, D, &err);
++	kd = (pD ? pD - D : depth - 1);
++	if (err)
++		goto out;
++	pS = next3_get_branch(src, depth, offsets, S, &err);
++	ks = (pS ? pS - S : depth - 1);
++	if (err)
++		goto out;
++
++	if (ks < 1 || kd < 1) {
++		/* snapshot double and tripple tree roots are pre-allocated */
++		err = -EIO;
++		goto out;
++	}
++
++	if (ks < kd) {
++		/* nothing to move from src to dst */
++		count = next3_blks_to_skip(src, iblock, maxblocks,
++					S, depth, offsets, ks);
++		snapshot_debug(3, "skipping src snapshot (%u) holes: "
++			       "block=0x%llx, count=0x%x\n", src->i_generation,
++			       SNAPSHOT_BLOCK(iblock), count);
++		err = count;
++		goto out;
++	}
++
++	/* move branches from level kd in src to dst */
++	pS = S+kd;
++	pD = D+kd;
++
++	/* compute max branches that can be moved */
++	data_ptrs_bits = ptrs_bits * (depth - kd - 1);
++	data_ptrs_mask = (1 << data_ptrs_bits) - 1;
++	max_ptrs = (maxblocks >> data_ptrs_bits) + 1;
++	if (max_ptrs > ptrs-offsets[kd])
++		max_ptrs = ptrs-offsets[kd];
++
++	/* get write access for the splice point */
++	err = next3_journal_get_write_access_inode(handle, src, pS->bh);
++	if (err)
++		goto out;
++	err = next3_journal_get_write_access_inode(handle, dst, pD->bh);
++	if (err)
++		goto out;
++
++	/* move as many whole branches as possible */
++	err = next3_move_branches(handle, src, pS->p, pD->p, depth-1-kd,
++			max_ptrs, &moved);
++	if (err < 0)
++		goto out;
++	count = err;
++	if (moved) {
++		snapshot_debug(3, "moved snapshot (%u) -> snapshot (%d) "
++			       "branches: block=0x%llx, count=0x%x, k=%d/%d, "
++			       "moved_blocks=%d\n", src->i_generation,
++			       dst->i_generation, SNAPSHOT_BLOCK(iblock),
++			       count, kd, depth, moved);
++		/* update src and dst inodes blocks usage */
++		vfs_dq_free_block(src, moved);
++		vfs_dq_alloc_block(dst, moved);
++		err = next3_journal_dirty_metadata(handle, pD->bh);
++		if (err)
++			goto out;
++		err = next3_journal_dirty_metadata(handle, pS->bh);
++		if (err)
++			goto out;
++	}
++
++	/* we merged at least 1 partial branch and optionally count-1 full
++	   branches */
++	err = (count << data_ptrs_bits) -
++		(SNAPSHOT_BLOCK(iblock) & data_ptrs_mask);
++out:
++	/* count_branch_blocks may use the entire depth of S */
++	for (ks = 1; ks < depth; ks++) {
++		if (S[ks].bh)
++			brelse(S[ks].bh);
++		if (ks <= kd)
++			brelse(D[ks].bh);
++	}
++	return err < maxblocks ? err : maxblocks;
++}
++
+ /**
+  *	next3_alloc_blocks: multiple allocate blocks needed for a branch
+  *	@indirect_blks: the number of blocks need to allocate for indirect
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:21:48.554777476 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:21:48.024738272 +0300
+@@ -1435,6 +1435,101 @@ out_err:
+ 	return err;
+ }
+ 
++/*
++ * next3_snapshot_merge - merge deleted snapshots
++ * @handle: JBD handle for this transaction
++ * @start:	latest non-deleted snapshot before deleted snapshots group
++ * @end:	first non-deleted snapshot after deleted snapshots group
++ * @need_merge: no. of deleted snapshots in the group
++ *
++ * Move all blocks from deleted snapshots group starting after @start and
++ * ending before @end to @start snapshot.  All moved blocks are 'in-use' by
++ * @start snapshot, because these deleted snapshots have already been shrunk
++ * (blocks 'in-use' are set in snapshot COW bitmap and not copied to snapshot).
++ * Called from next3_snapshot_update() under snapshot_mutex.
++ * Returns 0 on success and <0 on error.
++ */
++static int next3_snapshot_merge(struct inode *start, struct inode *end,
++				int need_merge)
++{
++	struct list_head *l, *n;
++	handle_t *handle = NULL;
++	struct next3_sb_info *sbi = NEXT3_SB(start->i_sb);
++	int err, ret;
++
++	snapshot_debug(3, "snapshot (%u-%u) merge: need_merge=%d\n",
++			start->i_generation, end->i_generation, need_merge);
++
++	/* iterate safe on (@start < snapshot < @end) */
++	list_for_each_prev_safe(l, n, &NEXT3_I(start)->i_snaplist) {
++		struct next3_inode_info *ei = list_entry(l,
++						 struct next3_inode_info,
++						 i_snaplist);
++		struct inode *inode = &ei->vfs_inode;
++		next3_fsblk_t block = 0;
++		/* blocks beyond the size of @start are not in-use by @start */
++		int count = SNAPSHOT_BLOCKS(start);
++
++		if (n == &sbi->s_snapshot_list || inode == end ||
++			!(ei->i_flags & NEXT3_SNAPFILE_SHRUNK_FL))
++			break;
++
++		/* start large transaction that will be extended/restarted */
++		handle = next3_journal_start(inode, NEXT3_MAX_TRANS_DATA);
++		if (IS_ERR(handle))
++			return PTR_ERR(handle);
++
++		while (count > 0) {
++			/* we modify one indirect block and the inode itself
++			 * for both the source and destination inodes */
++			err = extend_or_restart_transaction(handle, 4);
++			if (err)
++				goto out_err;
++
++			err = next3_snapshot_merge_blocks(handle, inode, start,
++						 SNAPSHOT_IBLOCK(block), count);
++
++			snapshot_debug(3, "snapshot (%u) -> snapshot (%u) "
++				       "merge: block = 0x%lx, count = 0x%x, "
++				       "err = 0x%x\n", inode->i_generation,
++				       start->i_generation, block, count, err);
++
++			if (err <= 0)
++				goto out_err;
++
++			block += err;
++			count -= err;
++		}
++
++		err = next3_journal_stop(handle);
++		handle = NULL;
++		if (err)
++			goto out_err;
++
++		/* we finished moving all blocks of interest from 'inode'
++		 * into 'start' so it is now safe to remove 'inode' from the
++		 * snapshots list forever */
++		err = next3_snapshot_remove(inode);
++		if (err)
++			goto out_err;
++
++		if (--need_merge <= 0)
++			break;
++	}
++
++	err = 0;
++out_err:
++	if (handle) {
++		ret = next3_journal_stop(handle);
++		if (!err)
++			err = ret;
++	}
++	if (need_merge)
++		snapshot_debug(1, "snapshot (%u-%u) merge: need_merge=%d(>0!), "
++			       "err=%d\n", start->i_generation,
++			       end->i_generation, need_merge, err);
++	return err;
++}
+ 
+ /*
+  * next3_snapshot_cleanup - shrink/merge/remove snapshot marked for deletion
+@@ -1466,6 +1561,10 @@ static int next3_snapshot_cleanup(struct
+ 		if (!(NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_SHRUNK_FL))
+ 			/* deleted snapshot needs shrinking */
+ 			(*need_shrink)++;
++		if (!(NEXT3_I(inode)->i_flags & NEXT3_SNAPFILE_INUSE_FL))
++			/* temporarily unused deleted
++			 * snapshot needs merging */
++			(*need_merge)++;
+ 		return 0;
+ 	}
+ 
+@@ -1478,6 +1577,14 @@ static int next3_snapshot_cleanup(struct
+ 			return err;
+ 		*need_shrink = 0;
+ 	}
++	if (*need_merge) {
++		/* pass 2: merge all shrunk snapshots
++		 * between 'used_by' and 'inode' */
++		err = next3_snapshot_merge(used_by, inode, *need_merge);
++		if (err)
++			return err;
++		*need_merge = 0;
++	}
+ 	return 0;
+ }
+ 
+diff -Nuarp a/fs/next3/snapshot.h b/fs/next3/snapshot.h
+--- a/fs/next3/snapshot.h	2010-07-26 09:21:48.564775993 +0300
++++ b/fs/next3/snapshot.h	2010-07-26 09:21:48.034699389 +0300
+@@ -366,6 +366,9 @@ extern int next3_snapshot_shrink_blocks(
+ 		sector_t iblock, unsigned long maxblocks,
+ 		struct buffer_head *cow_bh,
+ 		int shrink, int *pmapped);
++extern int next3_snapshot_merge_blocks(handle_t *handle,
++		struct inode *src, struct inode *dst,
++		sector_t iblock, unsigned long maxblocks);
+ 
+ /* super.c */
+ struct kstatfs;

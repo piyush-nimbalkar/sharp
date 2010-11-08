@@ -1,0 +1,70 @@
+====next3_snapshot_exclude_inode_old.patch====
+
+next3: snapshot exclude - migrate old exclude inode
+
+Exclude inode number has changed from 10 to 9.  The exclude_inode
+flag has also changed.  When old exclude_inode flag is set,
+copy inode 10 to 9, clear inode 10 and clear old exclude_inode flag.
+(new exclude_inode flag is set during migration of super block).
+
+Signed-off-by: Amir Goldstein <amir73il@users.sf.net>
+
+--------------------------------------------------------------------------------
+diff -Nuarp a/fs/next3/inode.c b/fs/next3/inode.c
+--- a/fs/next3/inode.c	2010-07-26 09:21:50.864857486 +0300
++++ b/fs/next3/inode.c	2010-07-26 09:21:50.264731030 +0300
+@@ -3286,6 +3286,21 @@ struct inode *next3_iget(struct super_bl
+ 		goto bad_inode;
+ 	bh = iloc.bh;
+ 	raw_inode = next3_raw_inode(&iloc);
++	/* Migrate old to new exclude inode on first iget */
++	if (ino == NEXT3_EXCLUDE_INO && NEXT3_HAS_COMPAT_FEATURE(sb,
++				NEXT3_FEATURE_COMPAT_EXCLUDE_INODE_OLD)) {
++		/* both inodes are on the same block */
++		char *old_inode = ((char *)raw_inode +
++			(NEXT3_EXCLUDE_INO_OLD - NEXT3_EXCLUDE_INO) *
++			NEXT3_INODE_SIZE(inode->i_sb));
++
++		/* copy old exclude inode */
++		memcpy((char *)raw_inode, old_inode,
++				NEXT3_INODE_SIZE(inode->i_sb));
++		/* clear old exclude inode */
++		memset(old_inode, 0, NEXT3_INODE_SIZE(inode->i_sb));
++		/* inode block will be marked dirty outside this function */
++	}
+ 	inode->i_mode = le16_to_cpu(raw_inode->i_mode);
+ 	inode->i_uid = (uid_t)le16_to_cpu(raw_inode->i_uid_low);
+ 	inode->i_gid = (gid_t)le16_to_cpu(raw_inode->i_gid_low);
+diff -Nuarp a/fs/next3/next3.h b/fs/next3/next3.h
+--- a/fs/next3/next3.h	2010-07-26 09:21:50.914819846 +0300
++++ b/fs/next3/next3.h	2010-07-26 09:21:50.314808664 +0300
+@@ -80,6 +80,7 @@
+ #define NEXT3_RESIZE_INO		 7	/* Reserved group descriptors inode */
+ #define NEXT3_JOURNAL_INO	 8	/* Journal inode */
+ #define NEXT3_EXCLUDE_INO		 9	/* Snapshot exclude inode */
++#define NEXT3_EXCLUDE_INO_OLD		10	/* Old exclude inode */
+ 
+ /* First non-reserved inode for old next3 filesystems */
+ #define NEXT3_GOOD_OLD_FIRST_INO	11
+diff -Nuarp a/fs/next3/snapshot_ctl.c b/fs/next3/snapshot_ctl.c
+--- a/fs/next3/snapshot_ctl.c	2010-07-26 09:21:50.954817264 +0300
++++ b/fs/next3/snapshot_ctl.c	2010-07-26 09:21:50.354736243 +0300
+@@ -1297,6 +1297,18 @@ static int next3_snapshot_init_bitmap_ca
+ 		max_groups *= NEXT3_DESC_PER_BLOCK(sb);
+ 	}
+ 
++	if (create && NEXT3_HAS_COMPAT_FEATURE(sb,
++				NEXT3_FEATURE_COMPAT_EXCLUDE_INODE_OLD)) {
++		/* journal exclude inode migration done inside next3_iget */
++		err = next3_journal_get_write_access(handle, sbi->s_sbh);
++		NEXT3_CLEAR_COMPAT_FEATURE(sb,
++				NEXT3_FEATURE_COMPAT_EXCLUDE_INODE_OLD);
++		if (!err)
++			err = next3_journal_dirty_metadata(handle, sbi->s_sbh);
++		if (!err)
++			err = next3_mark_inode_dirty(handle, inode);
++	}
++
+ 	/*
+ 	 * Init exclude bitmap blocks for all existing block groups and
+ 	 * allocate indirect blocks for all reserved block groups.

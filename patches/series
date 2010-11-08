@@ -29,3 +29,10 @@ next3_snapshot_list.patch
 next3_snapshot_list_read.patch
 next3_snapshot_race_bitmap.patch
 next3_snapshot_race_cow.patch
+next3_snapshot_race_read.patch
+next3_snapshot_exclude_inode.patch
+next3_snapshot_exclude_inode_old.patch
+next3_snapshot_exclude_bitmap.patch
+next3_snapshot_cleanup.patch
+next3_snapshot_cleanup_shrink.patch
+next3_snapshot_cleanup_merge.patch
