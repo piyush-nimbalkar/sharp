@@ -8,5 +8,6 @@
 *.mod.c
 *.symvers
 *.markers
+*.patch
 \#*
 *\#
