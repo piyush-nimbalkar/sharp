@@ -1,0 +1,189 @@
+Index: linux_dir/fs/ext4/balloc.c
+===================================================================
+--- linux_dir.orig/fs/ext4/balloc.c	2010-11-24 14:54:59.000000000 +0530
++++ linux_dir/fs/ext4/balloc.c	2010-11-24 18:29:05.000000000 +0530
+@@ -497,6 +497,10 @@
+ static int ext4_has_free_blocks(struct ext4_sb_info *sbi, s64 nblocks)
+ {
+ 	s64 free_blocks, dirty_blocks, root_blocks;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	ext4_fsblk_t snapshot_r_blocks;
++	handle_t *handle = journal_current_handle();
++#endif
+ 	struct percpu_counter *fbc = &sbi->s_freeblocks_counter;
+ 	struct percpu_counter *dbc = &sbi->s_dirtyblocks_counter;
+ 
+@@ -504,6 +508,25 @@
+ 	dirty_blocks = percpu_counter_read_positive(dbc);
+ 	root_blocks = ext4_r_blocks_count(sbi->s_es);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	if (handle && sbi->s_active_snapshot) {
++		snapshot_r_blocks =
++			le64_to_cpu(sbi->s_es->s_snapshot_r_blocks_count);
++		/*
++		 * snapshot reserved blocks for COWing to active snapshot
++		 */
++		if (free_blocks < snapshot_r_blocks + 1 &&
++		    !IS_COWING(handle)) {
++			return 0;
++		}
++		/*
++		 * mortal users must reserve blocks for both snapshot and
++		 * root user
++		 */
++		root_blocks += snapshot_r_blocks;
++	}
++#endif
++
+ 	if (free_blocks - (nblocks + root_blocks + dirty_blocks) <
+ 						EXT4_FREEBLOCKS_WATERMARK) {
+ 		free_blocks  = percpu_counter_sum_positive(fbc);
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 18:28:36.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-11-24 18:30:22.000000000 +0530
+@@ -236,6 +236,15 @@
+ 	  block as well as the journal inode and last snapshot inode fields.
+ 	  All snapshot inodes are cleared (to appear as empty inodes).
+ 
++config EXT4_FS_SNAPSHOT_CTL_RESERVE
++	bool "snapshot control - reserve disk space for snapshot"
++	depends on EXT4_FS_SNAPSHOT_CTL
++	default y
++	help
++	  Ensure there is enough disk space for snapshot file future use.
++	  Reserve disk space on snapshot take based on file system overhead
++	  size, number of directories and number of blocks/inodes in use.
++
+ config EXT4_FS_SNAPSHOT_BLOCK_MOVE
+ 	bool "snapshot block operation - move blocks to snapshot"
+ 	depends on EXT4_FS_SNAPSHOT_BLOCK
+Index: linux_dir/fs/ext4/snapshot_ctl.c
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot_ctl.c	2010-11-24 18:26:13.000000000 +0530
++++ linux_dir/fs/ext4/snapshot_ctl.c	2010-11-24 18:29:05.000000000 +0530
+@@ -12,6 +12,9 @@
+  * Ext4 snapshots control functions.
+  */
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++#include <linux/statfs.h>
++#endif
+ #include "snapshot.h"
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+@@ -751,6 +754,10 @@
+ 	int i;
+ #endif
+ 	int err = -EIO;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	u64 snapshot_r_blocks;
++	struct kstatfs statfs;
++#endif
+ 
+ 	if (!sbi->s_sbh)
+ 		goto out_err;
+@@ -779,6 +786,34 @@
+ 	}
+ 
+ 	err = -EIO;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	/* update fs statistics to calculate snapshot reserved space */
++	if (ext4_statfs_sb(sb, &statfs)) {
++		snapshot_debug(1, "failed to statfs before snapshot (%u) "
++			       "take\n", inode->i_generation);
++		goto out_err;
++	}
++	/*
++	 * Calculate maximum disk space for snapshot file metadata based on:
++	 * 1 indirect block per 1K fs blocks (to map moved data blocks)
++	 * +1 data block per 1K fs blocks (to copy indirect blocks)
++	 * +1 data block per fs meta block (to copy meta blocks)
++	 * +1 data block per directory (to copy small directory index blocks)
++	 * +1 data block per 64 inodes (to copy large directory index blocks)
++	 * XXX: reserved space may be too small in data jounaling mode,
++	 *      which is currently not supported.
++	 */
++	snapshot_r_blocks = 2 * (statfs.f_blocks >>
++				 SNAPSHOT_ADDR_PER_BLOCK_BITS) +
++		statfs.f_spare[0] + statfs.f_spare[1] +
++		(statfs.f_files - statfs.f_ffree) / 64;
++
++	/* verify enough free space before taking the snapshot */
++	if (statfs.f_bfree < snapshot_r_blocks) {
++		err = -ENOSPC;
++		goto out_err;
++	}
++#endif
+ 
+ 	/*
+ 	 * flush journal to disk and clear the RECOVER flag
+@@ -914,6 +949,9 @@
+ 		goto out_unlockfs;
+ 
+ 	/* set as on-disk active snapshot */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	sbi->s_es->s_snapshot_r_blocks_count = cpu_to_le64(snapshot_r_blocks);
++#endif
+ 	sbi->s_es->s_snapshot_id =
+ 		cpu_to_le32(le32_to_cpu(sbi->s_es->s_snapshot_id)+1);
+ 	if (sbi->s_es->s_snapshot_id == 0)
+Index: linux_dir/fs/ext4/snapshot.h
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot.h	2010-11-24 18:22:02.000000000 +0530
++++ linux_dir/fs/ext4/snapshot.h	2010-11-24 18:29:05.000000000 +0530
+@@ -348,6 +348,10 @@
+ 					   struct ext4_iloc *iloc);
+ 
+ /* super.c */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++struct kstatfs;
++extern int ext4_statfs_sb(struct super_block *sb, struct kstatfs *buf);
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+ /* tests if @inode is a snapshot file */
+Index: linux_dir/fs/ext4/super.c
+===================================================================
+--- linux_dir.orig/fs/ext4/super.c	2010-11-24 15:46:00.000000000 +0530
++++ linux_dir/fs/ext4/super.c	2010-11-24 18:29:05.000000000 +0530
+@@ -4515,9 +4515,19 @@
+ 	return err;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
++{
++	return ext4_statfs_sb(dentry->d_sb, buf);
++}
++
++int ext4_statfs_sb(struct super_block *sb, struct kstatfs *buf)
++{
++#else
+ static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
+ {
+ 	struct super_block *sb = dentry->d_sb;
++#endif
+ 	struct ext4_sb_info *sbi = EXT4_SB(sb);
+ 	struct ext4_super_block *es = sbi->s_es;
+ 	u64 fsid;
+@@ -4569,6 +4579,18 @@
+ 	buf->f_bavail = buf->f_bfree - ext4_r_blocks_count(es);
+ 	if (buf->f_bfree < ext4_r_blocks_count(es))
+ 		buf->f_bavail = 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
++	if (sbi->s_active_snapshot) {
++		if (buf->f_bfree < le32_to_cpu(es->s_r_blocks_count) +
++				le64_to_cpu(es->s_snapshot_r_blocks_count))
++			buf->f_bavail = 0;
++		else
++			buf->f_bavail -=
++				le64_to_cpu(es->s_snapshot_r_blocks_count);
++	}
++	buf->f_spare[0] = percpu_counter_sum_positive(&sbi->s_dirs_counter);
++	buf->f_spare[1] = sbi->s_overhead_last;
++#endif
+ 	buf->f_files = le32_to_cpu(es->s_inodes_count);
+ 	buf->f_ffree = percpu_counter_sum_positive(&sbi->s_freeinodes_counter);
+ 	buf->f_namelen = EXT4_NAME_LEN;

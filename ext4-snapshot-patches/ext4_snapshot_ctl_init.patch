@@ -1,0 +1,395 @@
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 18:23:43.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-11-24 18:25:59.000000000 +0530
+@@ -214,6 +214,17 @@
+ 	  Take/delete snapshot with chattr -X +/-S.
+ 	  Enable/disable snapshot with chattr -X +/-
+ 
++config EXT4_FS_SNAPSHOT_CTL_INIT
++	bool "snapshot control - init new snapshot"
++	depends on EXT4_FS_SNAPSHOT_CTL
++	default y
++	help
++	  On snapshot create, a few special blocks (i.e., the super block and
++	  group descriptors) are pre-allocated and on snapshot take, they are
++	  copied under journal_lock_updates().  This is done to avoid the
++	  recursion that would be caused by COWing these blocks after the
++	  snapshot becomes active.
++
+ config EXT4_FS_SNAPSHOT_BLOCK_MOVE
+ 	bool "snapshot block operation - move blocks to snapshot"
+ 	depends on EXT4_FS_SNAPSHOT_BLOCK
+Index: linux_dir/fs/ext4/snapshot_ctl.c
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot_ctl.c	2010-11-24 18:22:02.000000000 +0530
++++ linux_dir/fs/ext4/snapshot_ctl.c	2010-11-24 18:24:49.000000000 +0530
+@@ -334,6 +334,50 @@
+ #define extend_or_restart_transaction_inode(handle, inode, nblocks)	\
+ 	__extend_or_restart_transaction(__func__, (handle), (inode), (nblocks))
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++/*
++ * helper function for snapshot_create().
++ * places pre-allocated [d,t]ind blocks in position
++ * after they have been allocated as direct blocks.
++ */
++static inline int ext4_snapshot_shift_blocks(struct ext4_inode_info *ei,
++		int from, int to, int count)
++{
++	int i, err = -EIO;
++
++	/* move from direct blocks range */
++	BUG_ON(from < 0 || from + count > EXT4_NDIR_BLOCKS);
++	/* to indirect blocks range */
++	BUG_ON(to < EXT4_NDIR_BLOCKS || to + count > EXT4_SNAPSHOT_N_BLOCKS);
++
++	/*
++	 * truncate_mutex is held whenever allocating or freeing inode
++	 * blocks.
++	 */
++	mutex_lock(&ei->truncate_mutex);
++
++	/*
++	 * verify that 'from' blocks are allocated
++	 * and that 'to' blocks are not allocated.
++	 */
++	for (i = 0; i < count; i++)
++		if (!ei->i_data[from+i] ||
++				ei->i_data[to+i])
++			goto out;
++
++	/*
++	 * shift 'count' blocks from position 'from' to 'to'
++	 */
++	for (i = 0; i < count; i++) {
++		ei->i_data[to+i] = ei->i_data[from+i];
++		ei->i_data[from+i] = 0;
++	}
++	err = 0;
++out:
++	mutex_unlock(&ei->truncate_mutex);
++	return err;
++}
++#endif
+ 
+ /*
+  * ext4_snapshot_create() initializes a snapshot file
+@@ -348,6 +392,15 @@
+ 	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
+ 	struct ext4_inode_info *ei = EXT4_I(inode);
+ 	int i, err, ret;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++	int count, nind;
++	const long double_blocks = (1 << (2 * SNAPSHOT_ADDR_PER_BLOCK_BITS));
++	struct buffer_head *bh = NULL;
++	struct ext4_group_desc *desc;
++	unsigned long ino;
++	struct ext4_iloc iloc;
++	ext4_fsblk_t bmap_blk = 0, imap_blk = 0, inode_blk = 0;
++#endif
+ 	ext4_fsblk_t snapshot_blocks = le32_to_cpu(sbi->s_es->s_blocks_count);
+ 	if (active_snapshot) {
+ 		snapshot_debug(1, "failed to add snapshot because active "
+@@ -430,6 +483,142 @@
+ 	if (err)
+ 		goto out_handle;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++	/* small filesystems can be mapped with just 1 double indirect block */
++	nind = 1;
++	if (snapshot_blocks > double_blocks)
++		/* add up to 4 triple indirect blocks to map 2^32 blocks */
++		nind += ((snapshot_blocks - double_blocks) >>
++			(3 * SNAPSHOT_ADDR_PER_BLOCK_BITS)) + 1;
++	if (nind > EXT4_SNAPSHOT_NTIND_BLOCKS + 1) {
++		snapshot_debug(1, "need too many [d,t]ind blocks (%d) "
++				"for snapshot (%u)\n",
++				nind, inode->i_generation);
++		err = -EFBIG;
++		goto out_handle;
++	}
++
++	err = extend_or_restart_transaction_inode(handle, inode,
++			nind * EXT4_DATA_TRANS_BLOCKS(sb));
++	if (err)
++		goto out_handle;
++
++	/* pre-allocate and zero out [d,t]ind blocks */
++	for (i = 0; i < nind; i++) {
++		brelse(bh);
++		bh = ext4_getblk(handle, inode, i, SNAPMAP_WRITE, &err);
++		if (!bh || err)
++			break;
++		/* zero out indirect block and journal as dirty metadata */
++		err = ext4_journal_get_write_access(handle, bh);
++		if (err)
++			break;
++		lock_buffer(bh);
++		memset(bh->b_data, 0, bh->b_size);
++		set_buffer_uptodate(bh);
++		unlock_buffer(bh);
++		err = ext4_journal_dirty_metadata(handle, bh);
++		if (err)
++			break;
++	}
++	brelse(bh);
++	if (!bh || err) {
++		snapshot_debug(1, "failed to initiate [d,t]ind block (%d) "
++				"for snapshot (%u)\n",
++				i, inode->i_generation);
++		goto out_handle;
++	}
++	/* place pre-allocated [d,t]ind blocks in position */
++	err = ext4_snapshot_shift_blocks(ei, 0, EXT4_DIND_BLOCK, nind);
++	if (err) {
++		snapshot_debug(1, "failed to move pre-allocated [d,t]ind blocks"
++				" for snapshot (%u)\n",
++				inode->i_generation);
++		goto out_handle;
++	}
++
++	/* allocate super block and group descriptors for snapshot */
++	count = sbi->s_gdb_count + 1;
++	err = count;
++	for (i = 0; err > 0 && i < count; i += err) {
++		err = extend_or_restart_transaction_inode(handle, inode,
++				EXT4_DATA_TRANS_BLOCKS(sb));
++		if (err)
++			goto out_handle;
++		err = ext4_snapshot_map_blocks(handle, inode, i, count - i,
++						NULL, SNAPMAP_WRITE);
++	}
++	if (err <= 0) {
++		snapshot_debug(1, "failed to allocate super block and %d "
++			       "group descriptor blocks for snapshot (%u)\n",
++			       count - 1, inode->i_generation);
++		if (err)
++			err = -EIO;
++		goto out_handle;
++	}
++
++	ino = inode->i_ino;
++	/*
++	 * pre-allocate the following blocks in the new snapshot:
++	 * - block and inode bitmap blocks of ino's block group
++	 * - inode table block that contains ino
++	 */
++	err = extend_or_restart_transaction_inode(handle, inode,
++			3 * EXT4_DATA_TRANS_BLOCKS(sb));
++	if (err)
++		goto out_handle;
++
++	iloc.block_group = 0;
++	inode_blk = ext4_get_inode_block(sb, ino, &iloc);
++	bmap_blk = 0;
++	imap_blk = 0;
++	desc = ext4_get_group_desc(sb, iloc.block_group, NULL);
++	if (!desc)
++		goto next_snapshot;
++
++	bmap_blk = le32_to_cpu(desc->bg_block_bitmap);
++	imap_blk = le32_to_cpu(desc->bg_inode_bitmap);
++	if (!bmap_blk || !imap_blk)
++		goto next_snapshot;
++
++	count = 1;
++	if (imap_blk == bmap_blk + 1)
++		count++;
++	if (inode_blk == imap_blk + 1)
++		count++;
++	/* try to allocate all blocks at once */
++	err = ext4_snapshot_map_blocks(handle, inode,
++			bmap_blk, count,
++			NULL, SNAPMAP_WRITE);
++	count = err;
++	/* allocate remaining blocks one by one */
++	if (err > 0 && count < 2)
++		err = ext4_snapshot_map_blocks(handle, inode,
++				imap_blk, 1,
++				NULL,
++				SNAPMAP_WRITE);
++	if (err > 0 && count < 3)
++		err = ext4_snapshot_map_blocks(handle, inode,
++				inode_blk, 1,
++				NULL,
++				SNAPMAP_WRITE);
++next_snapshot:
++	if (!bmap_blk || !imap_blk || !inode_blk || err < 0) {
++#ifdef CONFIG_EXT4_FS_DEBUG
++		ext4_fsblk_t blk0 = iloc.block_group *
++			EXT4_BLOCKS_PER_GROUP(sb);
++		snapshot_debug(1, "failed to allocate block/inode bitmap "
++				"or inode table block of inode (%lu) "
++				"(%lu,%lu,%lu/%lu) for snapshot (%u)\n",
++				ino, bmap_blk - blk0,
++				imap_blk - blk0, inode_blk - blk0,
++				iloc.block_group, inode->i_generation);
++#endif
++		if (!err)
++			err = -EIO;
++		goto out_handle;
++	}
++#endif
+ 
+ 	snapshot_debug(1, "snapshot (%u) created\n", inode->i_generation);
+ 	err = 0;
+@@ -448,6 +637,70 @@
+  */
+ static handle_t dummy_handle;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++/*
++ * ext4_snapshot_copy_block() - copy block to new snapshot
++ * @snapshot:	new snapshot to copy block to
++ * @bh:		source buffer to be copied
++ * @mask:	if not NULL, mask buffer data before copying to snapshot
++ * 		(used to mask block bitmap with exclude bitmap)
++ * @name:	name of copied block to print
++ * @idx:	index of copied block to print
++ *
++ * Called from ext4_snapshot_take() under journal_lock_updates()
++ * Returns snapshot buffer on success, NULL on error
++ */
++static struct buffer_head *ext4_snapshot_copy_block(struct inode *snapshot,
++		struct buffer_head *bh, const char *mask,
++		const char *name, unsigned long idx)
++{
++	struct buffer_head *sbh = NULL;
++	int err;
++
++	if (!bh)
++		return NULL;
++
++	sbh = ext4_getblk(&dummy_handle, snapshot,
++			SNAPSHOT_IBLOCK(bh->b_blocknr),
++			SNAPMAP_READ, &err);
++
++	if (err || !sbh || sbh->b_blocknr == bh->b_blocknr) {
++		snapshot_debug(1, "failed to copy %s (%lu) "
++				"block [%lu/%lu] to snapshot (%u)\n",
++				name, idx,
++				SNAPSHOT_BLOCK_TUPLE(bh->b_blocknr),
++				snapshot->i_generation);
++		brelse(sbh);
++		return NULL;
++	}
++
++	ext4_snapshot_copy_buffer(sbh, bh, mask);
++
++	snapshot_debug(4, "copied %s (%lu) block [%lu/%lu] "
++			"to snapshot (%u)\n",
++			name, idx,
++			SNAPSHOT_BLOCK_TUPLE(bh->b_blocknr),
++			snapshot->i_generation);
++	return sbh;
++}
++
++/*
++ * List of blocks which are copied to snapshot for every special inode.
++ * Keep block bitmap first and inode table block last in the list.
++ */
++enum copy_inode_block {
++	COPY_BLOCK_BITMAP,
++	COPY_INODE_BITMAP,
++	COPY_INODE_TABLE,
++	COPY_INODE_BLOCKS_NUM
++};
++
++static char *copy_inode_block_name[COPY_INODE_BLOCKS_NUM] = {
++	"block bitmap",
++	"inode bitmap",
++	"inode table"
++};
++#endif
+ 
+ /*
+  * ext4_snapshot_take() makes a new snapshot file
+@@ -463,6 +716,14 @@
+ 	struct ext4_sb_info *sbi = EXT4_SB(sb);
+ 	struct ext4_super_block *es = NULL;
+ 	struct buffer_head *sbh = NULL;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++	struct buffer_head *bhs[COPY_INODE_BLOCKS_NUM] = { NULL };
++	const char *mask = NULL;
++	struct inode *curr_inode;
++	struct ext4_iloc iloc;
++	struct ext4_group_desc *desc;
++	int i;
++#endif
+ 	int err = -EIO;
+ 
+ 	if (!sbi->s_sbh)
+@@ -509,6 +770,61 @@
+ 	}
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++	/*
++	 * copy super block to snapshot and fix it
++	 */
++	lock_buffer(sbh);
++	memcpy(sbh->b_data, sbi->s_sbh->b_data, sb->s_blocksize);
++	set_buffer_uptodate(sbh);
++	unlock_buffer(sbh);
++	mark_buffer_dirty(sbh);
++	sync_dirty_buffer(sbh);
++
++	/*
++	 * copy group descriptors to snapshot
++	 */
++	for (i = 0; i < sbi->s_gdb_count; i++) {
++		brelse(sbh);
++		sbh = ext4_snapshot_copy_block(inode,
++				sbi->s_group_desc[i], NULL,
++				"GDT", i);
++		if (!sbh)
++			goto out_unlockfs;
++	}
++
++	curr_inode = inode;
++	/*
++	 * copy the following blocks to the new snapshot:
++	 * - block and inode bitmap blocks of curr_inode block group
++	 * - inode table block that contains curr_inode
++	 */
++	iloc.block_group = 0;
++	err = ext4_get_inode_loc(curr_inode, &iloc);
++	desc = ext4_get_group_desc(sb, iloc.block_group, NULL);
++	if (err || !desc) {
++		snapshot_debug(1, "failed to read inode and bitmap blocks "
++			       "of inode (%lu)\n", curr_inode->i_ino);
++		err = err ? : -EIO;
++		goto out_unlockfs;
++	}
++	for (i = 0; i < COPY_INODE_BLOCKS_NUM; i++)
++		brelse(bhs[i]);
++	bhs[COPY_BLOCK_BITMAP] = sb_bread(sb,
++			le32_to_cpu(desc->bg_block_bitmap));
++	bhs[COPY_INODE_BITMAP] = sb_bread(sb,
++			le32_to_cpu(desc->bg_inode_bitmap));
++	bhs[COPY_INODE_TABLE] = iloc.bh;
++	err = -EIO;
++	for (i = 0; i < COPY_INODE_BLOCKS_NUM; i++) {
++		brelse(sbh);
++		sbh = ext4_snapshot_copy_block(inode, bhs[i], mask,
++				copy_inode_block_name[i], curr_inode->i_ino);
++		if (!sbh)
++			goto out_unlockfs;
++		mask = NULL;
++	}
++#endif
+ 
+ 	/* reset COW bitmap cache */
+ 	err = ext4_snapshot_reset_bitmap_cache(sb, 0);
+@@ -540,6 +856,10 @@
+ 
+ out_err:
+ 	brelse(sbh);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_INIT
++	for (i = 0; i < COPY_INODE_BLOCKS_NUM; i++)
++		brelse(bhs[i]);
++#endif
+ 	return err;
+ }
+ 

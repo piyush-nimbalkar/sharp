@@ -1,0 +1,91 @@
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:21.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:20.000000000 +0200
+@@ -680,7 +680,12 @@ static int ext4_alloc_branch(handle_t *
+ 		branch[n].bh = bh;
+ 		lock_buffer(bh);
+ 		BUFFER_TRACE(bh, "call get_create_access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
++		if (!SNAPMAP_ISSYNC(cmd))
++			err = ext4_journal_get_create_access(handle, bh);
++#else
+ 		err = ext4_journal_get_create_access(handle, bh);
++#endif
+ 		if (err) {
+ 			unlock_buffer(bh);
+ 			brelse(bh);
+@@ -706,7 +711,25 @@ static int ext4_alloc_branch(handle_t *
+ 		unlock_buffer(bh);
+ 
+ 		BUFFER_TRACE(bh, "call ext4_journal_dirty_metadata");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
++		/*
++		 * When accessing a block group for the first time, the
++		 * block bitmap is the first block to be copied to the
++		 * snapshot.  We don't want to reserve journal credits for
++		 * the indirect blocks that map the bitmap copy (the COW
++		 * bitmap), so instead of writing through the journal, we
++		 * sync the indirect blocks directly to disk.  Of course,
++		 * this is not good for performance but it only happens once
++		 * per snapshot/blockgroup.
++		 */
++		if (SNAPMAP_ISSYNC(cmd)) {
++			mark_buffer_dirty(bh);
++			sync_dirty_buffer(bh);
++		} else
++			err = ext4_journal_dirty_metadata(handle, bh);
++#else
+ 		err = ext4_journal_dirty_metadata(handle, bh);
++#endif
+ 		if (err)
+ 			goto failed;
+ 	}
+@@ -716,7 +739,13 @@ failed:
+ 	/* Allocation failed, free what we already allocated */
+ 	for (i = 1; i <= n ; i++) {
+ 		BUFFER_TRACE(branch[i].bh, "call journal_forget");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
++		if (!SNAPMAP_ISSYNC(cmd))
++			/* no need to check for errors - we failed anyway */
++			(void) ext4_journal_forget(handle, branch[i].bh);
++#else
+ 		ext4_journal_forget(handle, branch[i].bh);
++#endif
+ 	}
+ 	for (i = 0; i <indirect_blks; i++)
+ 		ext4_free_blocks(handle, inode, new_blocks[i], 1);
+@@ -840,7 +869,13 @@ static int ext4_splice_branch(handle_t 
+ err_out:
+ 	for (i = 1; i <= num; i++) {
+ 		BUFFER_TRACE(where[i].bh, "call journal_forget");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
++		if (!SNAPMAP_ISSYNC(cmd))
++			/* no need to check for errors - we failed anyway */
++			(void) ext4_journal_forget(handle, where[i].bh);
++#else
+ 		ext4_journal_forget(handle, where[i].bh);
++#endif
+ 		ext4_free_blocks(handle,inode,le32_to_cpu(where[i-1].key),1);
+ 	}
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:21.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:20.000000000 +0200
+@@ -328,3 +328,17 @@ config EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
+ 	  we try to extend the current transaction to compensate for the used
+ 	  credits of the extra COW operation, so we don't run out of buffer
+ 	  credits too soon.
++
++config EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
++	bool "snapshot journaled - bypass to save credits"
++	depends on EXT4_FS_SNAPSHOT_JOURNAL
++	default y
++	help
++	  Don't journal COW bitmap indirect blocks to save journal credits.
++	  On very few COW operations (i.e., first block group access after
++	  snapshot take), there may be up to 3 extra blocks allocated for the
++	  active snapshot (i.e., COW bitmap block and up to 2 indirect blocks).
++	  Taking these 3 extra allocations into account on every COW operation
++	  would further increase the transaction's COW credits factor.
++	  Instead, we choose to pay a small performance penalty on these few
++	  COW bitmap operations and wait until they are synced to disk.

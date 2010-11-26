@@ -1,0 +1,279 @@
+Index: linux-2.6.37.1.x/fs/ext4/inode.c
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 14:57:18.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 14:58:34.000000000 +0530
+@@ -857,7 +857,12 @@
+ 	 */
+ 	if (where->bh) {
+ 		BUFFER_TRACE(where->bh, "get_write_access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++		err = ext4_journal_get_write_access_inode(handle, inode,
++							   where->bh);
++#else
+ 		err = ext4_journal_get_write_access(handle, where->bh);
++#endif
+ 		if (err)
+ 			goto err_out;
+ 	}
+@@ -4398,7 +4403,11 @@
+ 					    blocks_for_truncate(inode));
+ 		if (bh) {
+ 			BUFFER_TRACE(bh, "retaking write access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++			ext4_journal_get_write_access_inode(handle, inode, bh);
++#else
+ 			ext4_journal_get_write_access(handle, bh);
++#endif
+ 		}
+ 	}
+ 
+@@ -4444,7 +4453,12 @@
+ 
+ 	if (this_bh) {				/* For indirect block */
+ 		BUFFER_TRACE(this_bh, "get_write_access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++		err = ext4_journal_get_write_access_inode(handle, inode,
++							   this_bh);
++#else
+ 		err = ext4_journal_get_write_access(handle, this_bh);
++#endif
+ 		/* Important: if we can't update the indirect pointers
+ 		 * to the blocks, we can't free them. */
+ 		if (err)
+@@ -4602,8 +4616,13 @@
+ 				 * pointed to by an indirect block: journal it
+ 				 */
+ 				BUFFER_TRACE(parent_bh, "get_write_access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++				if (!ext4_journal_get_write_access_inode(
++					    handle, inode, parent_bh)){
++#else
+ 				if (!ext4_journal_get_write_access(handle,
+ 								   parent_bh)){
++#endif
+ 					*p = 0;
+ 					BUFFER_TRACE(parent_bh,
+ 					"call ext4_handle_dirty_metadata");
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 14:57:18.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 14:58:34.000000000 +0530
+@@ -98,3 +98,13 @@
+ 
+ 	  If you select Y here, then you will be able to turn on debugging
+ 	  with a command such as "echo 1 > /sys/kernel/debug/ext4/mballoc-debug"
++
++config EXT4_FS_SNAPSHOT_HOOKS_JBD
++	bool "snapshot hooks - inside JBD hooks"
++	depends on EXT4_FS_SNAPSHOT
++	default y
++	help
++	  Before every meta data buffer write, the journal API is called,
++	  namely, one of the ext4_journal_get_XXX_access() functions.
++	  We use these journal hooks to call the snapshot API,
++	  before every meta data buffer write.
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-26 14:57:18.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 14:58:34.000000000 +0530
+@@ -107,6 +107,58 @@
+  * Block access functions
+  */
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++/*
++ * get_write_access() is called before writing to a metadata block
++ * if @inode is not NULL, then this is an inode's indirect block
++ * otherwise, this is a file system global metadata block
++ *
++ * Return values:
++ * = 0 - block was COWed or doesn't need to be COWed
++ * < 0 - error
++ */
++static inline int ext4_snapshot_get_write_access(handle_t *handle,
++		struct inode *inode, struct buffer_head *bh)
++{
++	return ext4_snapshot_cow(handle, inode, bh, 1);
++}
++
++/*
++ * called from ext4_journal_get_undo_access(),
++ * which is called for group bitmap block from:
++ * 1. ext4_free_blocks_sb_inode() before deleting blocks
++ * 2. ext4_new_blocks() before allocating blocks
++ *
++ * Return values:
++ * = 0 - block was COWed or doesn't need to be COWed
++ * < 0 - error
++ */
++static inline int ext4_snapshot_get_undo_access(handle_t *handle,
++		struct buffer_head *bh)
++{
++	return ext4_snapshot_cow(handle, NULL, bh, 1);
++}
++
++/*
++ * get_create_access() is called after allocating a new metadata block
++ *
++ * Return values:
++ * = 0 - block was COWed or doesn't need to be COWed
++ * < 0 - error
++ */
++static inline int ext4_snapshot_get_create_access(handle_t *handle,
++		struct buffer_head *bh)
++{
++	/*
++	 * This block shouldn't need to be COWed if get_delete_access() was
++	 * called for all deleted blocks.  However, it may need to be COWed
++	 * if fsck was run and if it had freed some blocks without moving them
++	 * to snapshot.  In the latter case, -EIO will be returned.
++	 */
++	return ext4_snapshot_cow(handle, NULL, bh, 0);
++}
++
++#endif
+ 
+ /*
+  * Snapshot constructor/destructor
+Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.c	2010-11-26 14:57:18.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c	2010-11-26 15:01:41.000000000 +0530
+@@ -17,6 +17,10 @@
+ 
+ 	if (ext4_handle_valid(handle)) {
+ 		err = jbd2_journal_get_undo_access(handle, bh);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++	if (!err)
++		err = ext4_snapshot_get_undo_access(handle, bh);
++#endif
+ 		if (err)
+ 			ext4_journal_abort_handle(where, line, __func__, bh,
+ 						  handle, err);
+@@ -24,13 +28,23 @@
+ 	return err;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,handle_t *handle,
++                    struct inode *inode, struct buffer_head *bh)
++#else
++
+ int __ext4_journal_get_write_access(const char *where, unsigned int line,
+ 				    handle_t *handle, struct buffer_head *bh)
++#endif
+ {
+ 	int err = 0;
+ 
+ 	if (ext4_handle_valid(handle)) {
+ 		err = jbd2_journal_get_write_access(handle, bh);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++	if (!err)
++		err = ext4_snapshot_get_write_access(handle, inode, bh);
++#endif
+ 		if (err)
+ 			ext4_journal_abort_handle(where, line, __func__, bh,
+ 						  handle, err);
+@@ -112,6 +126,10 @@
+ 
+ 	if (ext4_handle_valid(handle)) {
+ 		err = jbd2_journal_get_create_access(handle, bh);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++	if (!err)
++		err = ext4_snapshot_get_create_access(handle, bh);
++#endif
+ 		if (err)
+ 			ext4_journal_abort_handle(where, line, __func__,
+ 						  bh, handle, err);
+Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-26 14:57:18.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-26 16:17:19.000000000 +0530
+@@ -104,6 +104,52 @@
+ #define EXT4_QUOTA_INIT_BLOCKS(sb) 0
+ #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
+ #endif
++
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++/*
++ * This struct is binary compatible to struct handle_s in include/linux/jbd.h
++ * for building a standalone ext4 module.
++ * XXX: be aware of changes to the original struct!!!
++ */
++struct ext4_handle_s
++{
++	/* Which compound transaction is this update a part of? */
++	transaction_t		*h_transaction;
++
++	/* Number of remaining buffers we are allowed to dirty: */
++	int			h_buffer_credits;
++
++	/* Reference count on this handle */
++	int			h_ref;
++
++	/* Field for caller's use to track errors through large fs */
++	/* operations */
++	int			h_err;
++
++	/* Flags [no locking] */
++	unsigned int	h_sync:		1;	/* sync-on-close */
++	unsigned int	h_jdata:	1;	/* force data journaling */
++	unsigned int	h_aborted:	1;	/* fatal error on handle */
++	unsigned int	h_cowing:	1;	/* COWing block to snapshot */
++
++#ifdef CONFIG_DEBUG_LOCK_ALLOC
++	struct lockdep_map	h_lockdep_map;
++#endif
++};
++
++#ifndef _EXT4_HANDLE_T
++#define _EXT4_HANDLE_T
++typedef struct ext4_handle_s		ext4_handle_t;	/* Ext4 COW handle */
++#endif
++
++#define IS_COWING(handle) \
++	((ext4_handle_t *)(handle))->h_cowing
++
++#define trace_cow_add(handle, name, num)
++#define trace_cow_inc(handle, name)
++
++#endif
++
+ #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))
+@@ -133,9 +179,16 @@
+ int __ext4_journal_get_undo_access(const char *where, unsigned int line,
+ 				   handle_t *handle, struct buffer_head *bh);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,handle_t *handle,
++				struct inode *inode, struct buffer_head *bh);
++#else
++
+ int __ext4_journal_get_write_access(const char *where, unsigned int line,
+ 				    handle_t *handle, struct buffer_head *bh);
+ 
++#endif
++
+ int __ext4_forget(const char *where, unsigned int line, handle_t *handle,
+ 		  int is_metadata, struct inode *inode,
+ 		  struct buffer_head *bh, ext4_fsblk_t blocknr);
+@@ -152,8 +205,17 @@
+ 
+ #define ext4_journal_get_undo_access(handle, bh) \
+ 	__ext4_journal_get_undo_access(__func__, __LINE__, (handle), (bh))
++
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
++#define ext4_journal_get_write_access(handle, bh) \
++  __ext4_journal_get_write_access_inode(__func__,__LINE__, (handle), NULL, (bh))
++#define ext4_journal_get_write_access_inode(handle, inode, bh) \
++  __ext4_journal_get_write_access_inode(__func__,__LINE__, (handle), (inode), \
++					       (bh))
++#else
+ #define ext4_journal_get_write_access(handle, bh) \
+ 	__ext4_journal_get_write_access(__func__, __LINE__, (handle), (bh))
++#endif
+ #define ext4_forget(handle, is_metadata, inode, bh, block_nr) \
+ 	__ext4_forget(__func__, __LINE__, (handle), (is_metadata), (inode), \
+ 		      (bh), (block_nr))

@@ -1,0 +1,247 @@
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:15.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:14.000000000 +0200
+@@ -938,6 +938,9 @@ int ext4_get_blocks_handle(handle_t *ha
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+ 	int read_through = 0;
+ 	struct inode *prev_snapshot;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	struct buffer_head *sbh = NULL;
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+ retry:
+@@ -1148,6 +1151,27 @@ retry:
+ 		goto out_mutex;
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	if (SNAPMAP_ISCOW(create)) {
++		/*
++		 * COWing block or creating COW bitmap.
++		 * we now have exclusive access to the COW destination block
++		 * and we are about to create the snapshot block mapping
++		 * and make it public.
++		 * grab the buffer cache entry and mark it new
++		 * to indicate a pending COW operation.
++		 * the refcount for the buffer cache will be released
++		 * when the COW operation is either completed or canceled.
++		 */
++		sbh = sb_getblk(inode->i_sb, le32_to_cpu(chain[depth-1].key));
++		if (!sbh) {
++			err = -EIO;
++			goto out_mutex;
++		}
++		ext4_snapshot_start_pending_cow(sbh);
++	}
++
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+ 	if (*(partial->p)) {
+ 		int ret;
+@@ -1211,6 +1235,46 @@ out_mutex:
+ 	set_buffer_new(bh_result);
+ got_it:
+ 	map_bh(bh_result, inode->i_sb, le32_to_cpu(chain[depth-1].key));
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	/*
++	 * On read of active snapshot, a mapped block may belong to a non
++	 * completed COW operation.  Use the buffer cache to test this
++	 * condition.  if (bh_result->b_blocknr == SNAPSHOT_BLOCK(iblock)),
++	 * then this is either read through to block device or moved block.
++	 * Either way, it is not a COWed block, so it cannot be pending COW.
++	 */
++	if (read_through && ext4_snapshot_is_active(inode) &&
++		bh_result->b_blocknr != SNAPSHOT_BLOCK(iblock))
++		sbh = sb_find_get_block(inode->i_sb, bh_result->b_blocknr);
++	if (read_through && sbh) {
++		/* wait for pending COW to complete */
++		ext4_snapshot_test_pending_cow(sbh, SNAPSHOT_BLOCK(iblock));
++		lock_buffer(sbh);
++		if (buffer_uptodate(sbh)) {
++			/*
++			 * Avoid disk I/O and copy out snapshot page directly
++			 * from block device page when possible.
++			 */
++			BUG_ON(!sbh->b_page);
++			BUG_ON(!bh_result->b_page);
++			lock_buffer(bh_result);
++			copy_highpage(bh_result->b_page, sbh->b_page);
++			set_buffer_uptodate(bh_result);
++			unlock_buffer(bh_result);
++		} else if (buffer_dirty(sbh)) {
++			/*
++			 * If snapshot data buffer is dirty (just been COWed),
++			 * then it is not safe to read it from disk yet.
++			 * We shouldn't get here because snapshot data buffer
++			 * only becomes dirty during COW and because we waited
++			 * for pending COW to complete, which means that a
++			 * dirty snapshot data buffer should be uptodate.
++			 */
++			WARN_ON(1);
++		}
++		unlock_buffer(sbh);
++	}
++#endif
+ 	if (count > blocks_to_boundary)
+ 		set_buffer_boundary(bh_result);
+ 	err = count;
+@@ -1218,6 +1282,12 @@ got_it:
+ 	partial = chain + depth - 1;	/* the whole chain */
+ cleanup:
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	/* cancel pending COW operation on failure to alloc snapshot block */
++	if (create && err < 0 && sbh)
++		ext4_snapshot_end_pending_cow(sbh);
++	brelse(sbh);
++#endif
+ #endif
+ 	while (partial > chain) {
+ 		BUFFER_TRACE(partial->bh, "call brelse");
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:15.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:14.000000000 +0200
+@@ -408,3 +408,23 @@ config EXT4_FS_SNAPSHOT_RACE_BITMAP
+ 	  wait (in msleep(1) loop), until the COW bitmap cache is uptodate.
+ 	  The COWing task copies the bitmap block into the new COW bitmap block
+ 	  and updates the COW bitmap cache with the new block number.
++
++config EXT4_FS_SNAPSHOT_RACE_COW
++	bool "snapshot race conditions - concurrent COW operations"
++	depends on EXT4_FS_SNAPSHOT_RACE
++	default y
++	help
++	  Wait for pending COW operations to complete.
++	  When concurrent tasks try to COW the same buffer, the task that takes
++	  the active snapshot truncate_mutex is elected as the the COWing task.
++	  The COWing task allocates a new snapshot block and creates a buffer
++	  cache entry with ref_count=1 for that new block.  It then locks the
++	  new buffer and marks it with the buffer_new flag.  The rest of the
++	  tasks wait (in msleep(1) loop), until the buffer_new flag is cleared.
++	  The COWing task copies the source buffer into the 'new' buffer,
++	  unlocks it, marks it as journal dirty data, clears the new_buffer flag
++	  and drops its reference count.
++	  On active snapshot readpage, the buffer cache is checked.
++	  If a 'new' buffer entry is found, the reader task waits until the
++	  buffer_new flag is cleared and then copies the 'new' buffer directly
++	  into the snapshot file page.
+diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
+--- a/fs/ext4/snapshot.c	2010-11-11 10:47:15.000000000 +0200
++++ b/fs/ext4/snapshot.c	2010-11-11 10:47:14.000000000 +0200
+@@ -272,6 +272,10 @@ ext4_snapshot_complete_cow(handle_t *ha
+ 		sync_dirty_buffer(sbh);
+ 
+ out:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	/* COW operation is complete */
++	ext4_snapshot_end_pending_cow(sbh);
++#endif
+ 	return err;
+ }
+ 
+@@ -914,6 +918,15 @@ int ext4_snapshot_test_and_cow(const ch
+ 	 * we allocated this block -
+ 	 * copy block data to snapshot and complete COW operation
+ 	 */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	snapshot_debug(3, "COWing block [%lu/%lu] of snapshot "
++			"(%u)...\n",
++			SNAPSHOT_BLOCK_GROUP_OFFSET(block),
++			SNAPSHOT_BLOCK_GROUP(block),
++			active_snapshot->i_generation);
++	/* sleep 1 tunable delay unit */
++	snapshot_test_delay(SNAPTEST_COW);
++#endif
+ 	err = ext4_snapshot_copy_buffer_cow(handle, sbh, bh);
+ 	if (err)
+ 		goto out;
+@@ -925,6 +938,11 @@ int ext4_snapshot_test_and_cow(const ch
+ 
+ 	trace_cow_inc(handle, copied);
+ test_pending_cow:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++	if (sbh)
++		/* wait for pending COW to complete */
++		ext4_snapshot_test_pending_cow(sbh, block);
++#endif
+ 
+ cowed:
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+diff -Nuarp a/fs/ext4/snapshot.h b/fs/ext4/snapshot.h
+--- a/fs/ext4/snapshot.h	2010-11-11 10:47:15.000000000 +0200
++++ b/fs/ext4/snapshot.h	2010-11-11 10:47:14.000000000 +0200
+@@ -451,6 +451,73 @@ static inline int ext4_snapshot_is_acti
+ }
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
++/*
++ * Pending COW functions
++ */
++
++/*
++ * Start pending COW operation from get_blocks_handle()
++ * after allocating snapshot block and before connecting it
++ * to the snapshot inode.
++ */
++static inline void ext4_snapshot_start_pending_cow(struct buffer_head *sbh)
++{
++	/*
++	 * setting the 'new' flag on a newly allocated snapshot block buffer
++	 * indicates that the COW operation is pending.
++	 */
++	set_buffer_new(sbh);
++	/* keep buffer in cache as long as we need to test the 'new' flag */
++	get_bh(sbh);
++}
++
++/*
++ * End pending COW operation started in get_blocks_handle().
++ * Called on failure to connect the new snapshot block to the inode
++ * or on successful completion of the COW operation.
++ */
++static inline void ext4_snapshot_end_pending_cow(struct buffer_head *sbh)
++{
++	/*
++	 * clearing the 'new' flag from the snapshot block buffer
++	 * indicates that the COW operation is complete.
++	 */
++	clear_buffer_new(sbh);
++	/* we no longer need to keep the buffer in cache */
++	put_bh(sbh);
++}
++
++/*
++ * Test for pending COW operation and wait for its completion.
++ */
++static inline void ext4_snapshot_test_pending_cow(struct buffer_head *sbh,
++						sector_t blocknr)
++{
++	SNAPSHOT_DEBUG_ONCE;
++	while (buffer_new(sbh)) {
++		/* wait for pending COW to complete */
++		snapshot_debug_once(2, "waiting for pending cow: "
++				"block = [%lu/%lu]...\n",
++				SNAPSHOT_BLOCK_TUPLE(blocknr));
++		/*
++		 * An unusually long pending COW operation can be caused by
++		 * the debugging function snapshot_test_delay(SNAPTEST_COW)
++		 * and by waiting for tracked reads to complete.
++		 * The new COW buffer is locked during those events, so wait
++		 * on the buffer before the short msleep.
++		 */
++		wait_on_buffer(sbh);
++		/*
++		 * This is an unlikely event that can happen only once per
++		 * block/snapshot, so msleep(1) is sufficient and there is
++		 * no need for a wait queue.
++		 */
++		msleep(1);
++		/* XXX: Should we fail after N retries? */
++	}
++}
++#endif
+ 
+ 
+ #endif	/* _LINUX_EXT4_SNAPSHOT_H */

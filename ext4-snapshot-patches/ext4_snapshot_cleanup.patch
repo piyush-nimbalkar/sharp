@@ -1,0 +1,513 @@
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:10.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:09.000000000 +0200
+@@ -528,6 +528,18 @@ static int ext4_blks_to_allocate(Indire
+ 	return count;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++static void ext4_free_data_cow(handle_t *handle, struct inode *inode,
++			   struct buffer_head *this_bh,
++			   __le32 *first, __le32 *last,
++			   const char *bitmap, int bit,
++			   int *pfreed_blocks, int *pblocks);
++
++#define ext4_free_data(handle, inode, bh, first, last)		\
++	ext4_free_data_cow(handle, inode, bh, first, last,		\
++			    NULL, 0, NULL, NULL)
++
++#endif
+ /**
+  *	ext4_alloc_blocks: multiple allocate blocks needed for a branch
+  *	@indirect_blks: the number of blocks need to allocate for indirect
+@@ -2665,11 +2677,40 @@ no_top:
+  * We release `count' blocks on disk, but (last - first) may be greater
+  * than `count' because there can be holes in there.
+  */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++/*
++ * ext4_clear_blocks_cow - Zero a number of block pointers (consult COW bitmap)
++ * @bitmap:	COW bitmap to consult when shrinking deleted snapshot
++ * @bit:	bit number representing the @first block
++ * @pblocks: 	pointer to counter of branch blocks
++ *
++ * If @pblocks is not NULL, don't free blocks, only update blocks counter and
++ * test that blocks are excluded.
++ */
++static void ext4_clear_blocks_cow(handle_t *handle, struct inode *inode,
++		struct buffer_head *bh, ext4_fsblk_t block_to_free,
++		unsigned long count, __le32 *first, __le32 *last,
++		const char *bitmap, int bit, int *pblocks)
++#else
+ static void ext4_clear_blocks(handle_t *handle, struct inode *inode,
+ 		struct buffer_head *bh, ext4_fsblk_t block_to_free,
+ 		unsigned long count, __le32 *first, __le32 *last)
++#endif
+ {
+ 	__le32 *p;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++
++	if (pblocks) {
++		/* test that blocks are excluded and update blocks counter */
++		ext4_snapshot_test_excluded(handle, inode, block_to_free,
++						count);
++		if (is_handle_aborted(handle))
++			return;
++		*pblocks += count;
++		return;
++	}
++
++#endif
+ 	if (try_to_extend_transaction(handle, inode)) {
+ 		if (bh) {
+ 			BUFFER_TRACE(bh, "call ext4_journal_dirty_metadata");
+@@ -2702,6 +2743,11 @@ static void ext4_clear_blocks(handle_t 
+ 	 */
+ 	for (p = first; p < last; p++) {
+ 		u32 nr = le32_to_cpu(*p);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++		if (nr && bitmap && ext4_test_bit(bit + (p - first), bitmap))
++			/* don't free block used by older snapshot */
++			nr = 0;
++#endif
+ 		if (nr) {
+ 			struct buffer_head *bh;
+ 
+@@ -2733,9 +2779,27 @@ static void ext4_clear_blocks(handle_t 
+  * @this_bh will be %NULL if @first and @last point into the inode's direct
+  * block pointers.
+  */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++/*
++ * ext4_free_data_cow - free a list of data blocks (consult COW bitmap)
++ * @bitmap:	COW bitmap to consult when shrinking deleted snapshot
++ * @bit:	bit number representing the @first block
++ * @pfreed_blocks:	return number of freed blocks
++ * @pblocks: 	pointer to counter of branch blocks
++ *
++ * If @pblocks is not NULL, don't free blocks, only update blocks counter and
++ * test that blocks are excluded.
++ */
++static void ext4_free_data_cow(handle_t *handle, struct inode *inode,
++			   struct buffer_head *this_bh,
++			   __le32 *first, __le32 *last,
++			   const char *bitmap, int bit,
++			   int *pfreed_blocks, int *pblocks)
++#else
+ static void ext4_free_data(handle_t *handle, struct inode *inode,
+ 			   struct buffer_head *this_bh,
+ 			   __le32 *first, __le32 *last)
++#endif
+ {
+ 	ext4_fsblk_t block_to_free = 0;    /* Starting block # of a run */
+ 	unsigned long count = 0;	    /* Number of blocks in the run */
+@@ -2747,6 +2811,11 @@ static void ext4_free_data(handle_t *ha
+ 					       for current block */
+ 	int err;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	if (pblocks)
++		/* we're not actually deleting any blocks */
++		this_bh = NULL;
++#endif
+ 	if (this_bh) {				/* For indirect block */
+ 		BUFFER_TRACE(this_bh, "get_write_access");
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+@@ -2763,6 +2832,13 @@ static void ext4_free_data(handle_t *ha
+ 
+ 	for (p = first; p < last; p++) {
+ 		nr = le32_to_cpu(*p);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++		if (nr && bitmap && ext4_test_bit(bit + (p - first), bitmap))
++			/* don't free block used by older snapshot */
++			nr = 0;
++		if (nr && pfreed_blocks)
++			++(*pfreed_blocks);
++#endif
+ 		if (nr) {
+ 			/* accumulate blocks to free if they're contiguous */
+ 			if (count == 0) {
+@@ -2772,9 +2848,17 @@ static void ext4_free_data(handle_t *ha
+ 			} else if (nr == block_to_free + count) {
+ 				count++;
+ 			} else {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++				ext4_clear_blocks_cow(handle, inode, this_bh,
++					       block_to_free, count,
++					       block_to_free_p, p, bitmap,
++					       bit + (block_to_free_p - first),
++					       pblocks);
++#else
+ 				ext4_clear_blocks(handle, inode, this_bh,
+ 						  block_to_free,
+ 						  count, block_to_free_p, p);
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+ 				/* we may have lost write_access on this_bh */
+ 				if (is_handle_aborted(handle))
+@@ -2787,9 +2871,18 @@ static void ext4_free_data(handle_t *ha
+ 		}
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	if (count > 0)
++		ext4_clear_blocks_cow(handle, inode, this_bh,
++				block_to_free, count, block_to_free_p, p,
++				bitmap, bit + (block_to_free_p - first), pblocks);
++	if (pblocks)
++		return;
++#else
+ 	if (count > 0)
+ 		ext4_clear_blocks(handle, inode, this_bh, block_to_free,
+ 				  count, block_to_free_p, p);
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+ 	/* we may have lost write_access on this_bh */
+ 	if (is_handle_aborted(handle))
+@@ -2829,9 +2922,23 @@ static void ext4_free_data(handle_t *ha
+  *	stored as little-endian 32-bit) and updating @inode->i_blocks
+  *	appropriately.
+  */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++/*
++ *	ext4_free_branches_cow - free or exclude an array of branches
++ *	@pblocks: 	pointer to counter of branch blocks
++ *
++ *	If @pblocks is not NULL, don't free blocks, only update blocks counter
++ *	and test that blocks are excluded.
++ */
++void ext4_free_branches_cow(handle_t *handle, struct inode *inode,
++			       struct buffer_head *parent_bh,
++			       __le32 *first, __le32 *last, int depth,
++			       int *pblocks)
++#else
+ static void ext4_free_branches(handle_t *handle, struct inode *inode,
+ 			       struct buffer_head *parent_bh,
+ 			       __le32 *first, __le32 *last, int depth)
++#endif
+ {
+ 	ext4_fsblk_t nr;
+ 	__le32 *p;
+@@ -2839,6 +2946,11 @@ static void ext4_free_branches(handle_t
+ 	if (is_handle_aborted(handle))
+ 		return;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	if (pblocks)
++		/* we're not actually deleting any blocks */
++		parent_bh = NULL;
++#endif
+ 	if (depth--) {
+ 		struct buffer_head *bh;
+ 		int addr_per_block = EXT4_ADDR_PER_BLOCK(inode->i_sb);
+@@ -2864,10 +2976,27 @@ static void ext4_free_branches(handle_t
+ 
+ 			/* This zaps the entire block.  Bottom up. */
+ 			BUFFER_TRACE(bh, "free child branches");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++			ext4_free_branches_cow(handle, inode, bh,
++					(__le32 *)bh->b_data,
++					(__le32 *)bh->b_data + addr_per_block,
++					depth, pblocks);
++			if (pblocks) {
++				/* test that block is excluded and update
++				   blocks counter */
++				ext4_snapshot_test_excluded(handle, inode,
++								nr, 1);
++				if (is_handle_aborted(handle))
++					return;
++				*pblocks += 1;
++				continue;
++			}
++#else
+ 			ext4_free_branches(handle, inode, bh,
+ 					   (__le32*)bh->b_data,
+ 					   (__le32*)bh->b_data + addr_per_block,
+ 					   depth);
++#endif
+ 
+ 			/*
+ 			 * We've probably journalled the indirect block several
+@@ -2939,7 +3068,12 @@ static void ext4_free_branches(handle_t
+ 	} else {
+ 		/* We have reached the bottom of the tree. */
+ 		BUFFER_TRACE(parent_bh, "free data blocks");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++		ext4_free_data_cow(handle, inode, parent_bh, first, last,
++				    NULL, 0, NULL, pblocks);
++#else
+ 		ext4_free_data(handle, inode, parent_bh, first, last);
++#endif
+ 	}
+ }
+ 
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:10.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:09.000000000 +0200
+@@ -486,3 +486,15 @@ config EXT4_FS_SNAPSHOT_EXCLUDE_BITMAP
+ 	  Excluding blocks is done by setting their bit in the exclude bitmap.
+ 	  There is one exclude bitmap block per block group and its location
+ 	  is cached in the group descriptor.
++
++config EXT4_FS_SNAPSHOT_CLEANUP
++	bool "snapshot cleanup"
++	depends on EXT4_FS_SNAPSHOT_LIST
++	depends on EXT4_FS_SNAPSHOT_EXCLUDE_BITMAP
++	default y
++	help
++	  Cleanup snapshots list and reclaim unused blocks of deleted snapshots.
++	  Oldest snapshot can be removed from list and its blocks can be freed.
++	  Non-oldest snapshots have to be shrunk and merged before they can be
++	  removed from the list.  All snapshot blocks must be excluded in order
++	  to properly shrink/merge deleted old snapshots.
+diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
+--- a/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:10.000000000 +0200
++++ b/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:09.000000000 +0200
+@@ -176,6 +176,9 @@ static int ext4_snapshot_enable(struct 
+ static int ext4_snapshot_disable(struct inode *inode);
+ static int ext4_snapshot_create(struct inode *inode);
+ static int ext4_snapshot_delete(struct inode *inode);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++static int ext4_snapshot_exclude(handle_t *handle, struct inode *inode);
++#endif
+ 
+ /*
+  * ext4_snapshot_get_flags() check snapshot state
+@@ -233,6 +236,13 @@ int ext4_snapshot_set_flags(handle_t *h
+ #endif
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	if (!(flags & EXT4_SNAPFILE_FL))
++		/* test snapshot blocks are excluded on chattr -x */
++		err = ext4_snapshot_exclude(handle, inode);
++	if (err)
++		goto out;
++#endif
+ 
+ 	if ((flags ^ oldflags) & EXT4_SNAPFILE_ENABLED_FL) {
+ 		/* enabled/disabled the snapshot during transaction */
+@@ -1040,6 +1050,84 @@ out_err:
+ 	return err;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++/*
++ * ext4_snapshot_clean() "cleans" snapshot file blocks in 1 of 2 ways:
++ * 1. from ext4_snapshot_remove() with @cleanup=1 to free snapshot file
++ *    blocks, before removing snapshot file from snapshots list.
++ * 2. from ext4_snapshot_exclude() with @cleanup=0 to mark snapshot file
++ *    blocks in exclude bitmap.
++ * Called under snapshot_mutex.
++ *
++ * Return values:
++ * > 0 - no. of blocks in snapshot file (@cleanup=0)
++ * = 0 - successful cleanup (@cleanup=1)
++ * < 0 - error
++ */
++static int ext4_snapshot_clean(handle_t *handle, struct inode *inode,
++		int cleanup)
++{
++	struct ext4_inode_info *ei = EXT4_I(inode);
++	int i, nblocks = 0;
++	int *pblocks = (cleanup ? NULL : &nblocks);
++
++	if (!ext4_snapshot_list(inode)) {
++		snapshot_debug(1, "ext4_snapshot_clean() called with "
++			       "snapshot file (ino=%lu) not on list\n",
++			       inode->i_ino);
++		return -EINVAL;
++	}
++
++	if (ei->i_flags & EXT4_SNAPFILE_ACTIVE_FL) {
++		snapshot_debug(1, "clean of active snapshot (%u) "
++			       "is not allowed.\n",
++			       inode->i_generation);
++		return -EPERM;
++	}
++
++	/*
++	 * A very simplified version of ext4_truncate() for snapshot files.
++	 * A non-active snapshot file never allocates new blocks and only frees
++	 * blocks under snapshot_mutex, so no need to take truncate_mutex here.
++	 * No need to add inode to orphan list for post crash truncate, because
++	 * snapshot is still on the snapshot list and marked for deletion.
++	 */
++	for (i = EXT4_DIND_BLOCK; i < EXT4_SNAPSHOT_N_BLOCKS; i++) {
++		int depth = (i == EXT4_DIND_BLOCK ? 2 : 3);
++		if (!ei->i_data[i])
++			continue;
++		ext4_free_branches_cow(handle, inode, NULL,
++				ei->i_data+i, ei->i_data+i+1, depth, pblocks);
++		if (cleanup)
++			ei->i_data[i] = 0;
++	}
++	return nblocks;
++}
++
++/*
++ * ext4_snapshot_exclude() marks snapshot file blocks in exclude bitmap.
++ * Snapshot file blocks should already be excluded if everything works properly.
++ * This function is used only to verify the correctness of exclude bitmap.
++ * Called under i_mutex and snapshot_mutex.
++ */
++static int ext4_snapshot_exclude(handle_t *handle, struct inode *inode)
++{
++	int err;
++
++	/* extend small transaction started in ext4_ioctl() */
++	err = extend_or_restart_transaction(handle, EXT4_MAX_TRANS_DATA);
++	if (err)
++		return err;
++
++	err = ext4_snapshot_clean(handle, inode, 0);
++	if (err < 0)
++		return err;
++
++	snapshot_debug(1, "snapshot (%u) is clean (%d blocks)\n",
++			inode->i_generation, err);
++	return 0;
++}
++#endif
+ 
+ /*
+  * ext4_snapshot_enable() enables snapshot mount
+@@ -1183,6 +1271,18 @@ static int ext4_snapshot_remove(struct 
+ 	}
+ 	sbi = EXT4_SB(inode->i_sb);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	err = ext4_snapshot_clean(handle, inode, 1);
++	if (err)
++		goto out_handle;
++
++	/* reset snapshot inode size */
++	i_size_write(inode, 0);
++	ei->i_disksize = 0;
++	err = ext4_mark_inode_dirty(handle, inode);
++	if (err)
++		goto out_handle;
++#endif
+ 
+ 	err = extend_or_restart_transaction_inode(handle, inode, 2);
+ 	if (err)
+@@ -1242,6 +1342,35 @@ out_err:
+ 
+ 
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++/*
++ * ext4_snapshot_cleanup - shrink/merge/remove snapshot marked for deletion
++ * @inode - inode in question
++ * @used_by - latest non-deleted snapshot
++ * @deleted - true if snapshot is marked for deletion and not active
++ * @need_shrink - counter of deleted snapshots to shrink
++ * @need_merge - counter of deleted snapshots to merge
++ *
++ * Deleted snapshot with no older non-deleted snapshot - remove from list
++ * Deleted snapshot with no older enabled snapshot - add to merge count
++ * Deleted snapshot with older enabled snapshot - add to shrink count
++ * Non-deleted snapshot - shrink and merge deleted snapshots group
++ *
++ * Called from ext4_snapshot_update() under snapshot_mutex.
++ * Returns 0 on success and <0 on error.
++ */
++static int ext4_snapshot_cleanup(struct inode *inode, struct inode *used_by,
++		int deleted, int *need_shrink, int *need_merge)
++{
++	int err = 0;
++
++	if (deleted && !used_by)
++		/* remove permanently unused deleted snapshot */
++		return ext4_snapshot_remove(inode);
++
++	return 0;
++}
++#endif
+ #endif
+ 
+ /*
+@@ -1700,6 +1829,10 @@ int ext4_snapshot_update(struct super_b
+ 	int found_enabled = 0;
+ 	struct list_head *prev;
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	int need_shrink = 0;
++	int need_merge = 0;
++#endif
+ 	int err = 0;
+ 
+ 	BUG_ON(read_only && cleanup);
+@@ -1756,9 +1889,15 @@ update_snapshot:
+ 		/* snapshot is not in use by older enabled snapshots */
+ 		ei->i_flags &= ~EXT4_SNAPFILE_INUSE_FL;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++	if (cleanup)
++		err = ext4_snapshot_cleanup(inode, used_by, deleted,
++				&need_shrink, &need_merge);
++#else
+ 	if (cleanup && deleted && !used_by)
+ 		/* remove permanently unused deleted snapshot */
+ 		err = ext4_snapshot_remove(inode);
++#endif
+ 
+ 	if (!deleted) {
+ 		if (!found_active)
+diff -Nuarp a/fs/ext4/snapshot.h b/fs/ext4/snapshot.h
+--- a/fs/ext4/snapshot.h	2010-11-11 10:47:10.000000000 +0200
++++ b/fs/ext4/snapshot.h	2010-11-11 10:47:09.000000000 +0200
+@@ -316,6 +316,36 @@ static inline int ext4_snapshot_get_del
+ }
+ 
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++extern int ext4_snapshot_test_and_exclude(const char *where, handle_t *handle,
++		struct super_block *sb, ext4_fsblk_t block, int maxblocks,
++		int exclude);
++
++/*
++ * ext4_snapshot_exclude_blocks() - exclude snapshot blocks
++ *
++ * Called from ext4_snapshot_test_and_{cow,move}() when copying/moving
++ * blocks to active snapshot.
++ *
++ * On error handle is aborted.
++ */
++#define ext4_snapshot_exclude_blocks(handle, sb, block, count) \
++	ext4_snapshot_test_and_exclude(__func__, (handle), (sb), \
++			(block), (count), 1)
++
++/*
++ * ext4_snapshot_test_excluded() - test that snapshot blocks are excluded
++ *
++ * Called from ext4_snapshot_clean(), ext4_free_branches_cow() and
++ * ext4_clear_blocks_cow() under snapshot_mutex.
++ *
++ * On error handle is aborted.
++ */
++#define ext4_snapshot_test_excluded(handle, inode, block, count) \
++	ext4_snapshot_test_and_exclude(__func__, (handle), (inode)->i_sb, \
++			(block), (count), 0)
++
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
+ extern int ext4_snapshot_get_read_access(struct super_block *sb,
+ 					  struct buffer_head *bh);
+@@ -377,6 +407,16 @@ extern int ext4_inode_list_del(handle_t
+ extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
+ 					   unsigned long ino,
+ 					   struct ext4_iloc *iloc);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CLEANUP
++extern void ext4_free_branches_cow(handle_t *handle, struct inode *inode,
++				    struct buffer_head *parent_bh,
++				    __le32 *first, __le32 *last,
++				    int depth, int *pblocks);
++
++#define ext4_free_branches(handle, inode, bh, first, last, depth)	\
++	ext4_free_branches_cow((handle), (inode), (bh),		\
++				(first), (last), (depth), NULL)
++#endif
+ 
+ /* super.c */
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
