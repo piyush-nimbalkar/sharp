@@ -1,7 +1,7 @@
-Index: linux_dir/fs/ext4/ioctl.c
+Index: linux-2.6.37.1.x/fs/ext4/ioctl.c
 ===================================================================
---- linux_dir.orig/fs/ext4/ioctl.c	2010-11-24 14:54:59.000000000 +0530
-+++ linux_dir/fs/ext4/ioctl.c	2010-11-24 18:22:02.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ioctl.c	2010-11-26 13:46:22.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ioctl.c	2010-11-27 20:20:37.000000000 +0530
 @@ -45,6 +45,9 @@
  	switch (cmd) {
  	case EXT4_IOC_GETFLAGS:
@@ -33,57 +33,10 @@ Index: linux_dir/fs/ext4/ioctl.c
  		oldflags = ei->i_flags;
  
  		/* The JOURNAL_DATA flag is modifiable only by root */
-@@ -130,8 +140,15 @@
- 
- 		flags = flags & EXT4_FL_USER_MODIFIABLE;
- 		flags |= oldflags & ~EXT4_FL_USER_MODIFIABLE;
--		ei->i_flags = flags;
- 
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
-+		err = ext4_snapshot_set_flags(handle, inode, flags);
-+		if (err)
-+			goto flags_err;
-+#else
-+
-+		ei->i_flags = flags;
-+#endif
- 		ext4_set_inode_flags(inode);
- 		inode->i_ctime = ext4_current_time(inode);
- 
-@@ -145,9 +162,29 @@
- 			err = ext4_change_inode_journal_flag(inode, jflag);
- 		if (err)
- 			goto flags_out;
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
-+		if (!(oldflags & EXT4_SNAPFILE_LIST_FL) &&
-+				(flags & EXT4_SNAPFILE_LIST_FL))
-+			/* setting list flag - take snapshot */
-+			err = ext4_snapshot_take(inode);
-+#endif
- 		if (migrate)
- 			err = ext4_ext_migrate(inode);
- flags_out:
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
-+		if (snapflags & EXT4_SNAPFILE_LIST_FL) {
-+			/* if clearing list flag, cleanup snapshot list */
-+			int ret, cleanup = !(flags & EXT4_SNAPFILE_LIST_FL);
-+
-+			/* update/cleanup snapshots list even if take failed */
-+			ret = ext4_snapshot_update(inode->i_sb, cleanup, 0);
-+			if (!err)
-+				err = ret;
-+		}
-+
-+		if (snapflags)
-+			mutex_unlock(&EXT4_SB(inode->i_sb)->s_snapshot_mutex);
-+#endif
- 		mutex_unlock(&inode->i_mutex);
- 		mnt_drop_write(filp->f_path.mnt);
- 		return err;
-@@ -173,6 +210,37 @@
- 			goto setversion_out;
- 		}
- 
+@@ -116,7 +126,37 @@
+ 			}
+ 		} else if (oldflags & EXT4_EOFBLOCKS_FL)
+ 			ext4_truncate(inode);
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
 +		/*
 +		 * Snapshot file flags can only be changed by
@@ -113,12 +66,59 @@ Index: linux_dir/fs/ext4/ioctl.c
 +			 */
 +			mutex_lock(&EXT4_SB(inode->i_sb)->s_snapshot_mutex);
 +		}
-+
+ 
 +#endif
  		handle = ext4_journal_start(inode, 1);
  		if (IS_ERR(handle)) {
  			err = PTR_ERR(handle);
-@@ -227,7 +295,10 @@
+@@ -130,8 +170,15 @@
+ 
+ 		flags = flags & EXT4_FL_USER_MODIFIABLE;
+ 		flags |= oldflags & ~EXT4_FL_USER_MODIFIABLE;
+-		ei->i_flags = flags;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
++		err = ext4_snapshot_set_flags(handle, inode, flags);
++		if (err)
++			goto flags_err;
++#else
++
++		ei->i_flags = flags;
++#endif
+ 		ext4_set_inode_flags(inode);
+ 		inode->i_ctime = ext4_current_time(inode);
+ 
+@@ -145,9 +192,29 @@
+ 			err = ext4_change_inode_journal_flag(inode, jflag);
+ 		if (err)
+ 			goto flags_out;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
++		if (!(oldflags & EXT4_SNAPFILE_LIST_FL) &&
++				(flags & EXT4_SNAPFILE_LIST_FL))
++			/* setting list flag - take snapshot */
++			err = ext4_snapshot_take(inode);
++#endif
+ 		if (migrate)
+ 			err = ext4_ext_migrate(inode);
+ flags_out:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
++		if (snapflags & EXT4_SNAPFILE_LIST_FL) {
++			/* if clearing list flag, cleanup snapshot list */
++			int ret, cleanup = !(flags & EXT4_SNAPFILE_LIST_FL);
++
++			/* update/cleanup snapshots list even if take failed */
++			ret = ext4_snapshot_update(inode->i_sb, cleanup, 0);
++			if (!err)
++				err = ret;
++		}
++
++		if (snapflags)
++			mutex_unlock(&EXT4_SB(inode->i_sb)->s_snapshot_mutex);
++#endif
+ 		mutex_unlock(&inode->i_mutex);
+ 		mnt_drop_write(filp->f_path.mnt);
+ 		return err;
+@@ -227,7 +294,10 @@
  		err = mnt_want_write(filp->f_path.mnt);
  		if (err)
  			return err;
@@ -130,7 +130,7 @@ Index: linux_dir/fs/ext4/ioctl.c
  		err = ext4_group_extend(sb, EXT4_SB(sb)->s_es, n_blocks_count);
  		if (EXT4_SB(sb)->s_journal) {
  			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
-@@ -236,6 +307,9 @@
+@@ -236,6 +306,9 @@
  		}
  		if (err == 0)
  			err = err2;
@@ -140,10 +140,10 @@ Index: linux_dir/fs/ext4/ioctl.c
  		mnt_drop_write(filp->f_path.mnt);
  
  		return err;
-Index: linux_dir/fs/ext4/Kconfig
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 18:15:27.000000000 +0530
-+++ linux_dir/fs/ext4/Kconfig	2010-11-24 18:23:43.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-27 19:42:15.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-27 20:17:03.000000000 +0530
 @@ -205,6 +205,15 @@
  	  Implementation of copying blocks into a snapshot file.
  	  This mechanism is used to copy-on-write metadata blocks to snapshot.
@@ -160,13 +160,13 @@ Index: linux_dir/fs/ext4/Kconfig
  config EXT4_FS_SNAPSHOT_BLOCK_MOVE
  	bool "snapshot block operation - move blocks to snapshot"
  	depends on EXT4_FS_SNAPSHOT_BLOCK
-Index: linux_dir/fs/ext4/snapshot_ctl.c
+Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot_ctl.c	2010-11-24 18:15:27.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot_ctl.c	2010-11-24 18:22:02.000000000 +0530
-@@ -145,6 +145,596 @@
- 	int err, num = 0, snapshot_id = 0;
- 	int has_active = 0;
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot_ctl.c	2010-11-27 19:42:15.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-11-27 20:19:09.000000000 +0530
+@@ -116,6 +116,369 @@
+ #define ext4_snapshot_reset_bitmap_cache(sb, init) 0
+ #endif
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
 +/*
@@ -531,7 +531,13 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +		snapshot_test_delay(SNAPTEST_TAKE);
 +	}
 +#endif
-+
+ 
+ /*
+  * Snapshot constructor/destructor
+@@ -146,6 +509,233 @@
+ 	int has_active = 0;
+ 
+ 
 +
 +	/* reset COW bitmap cache */
 +	err = ext4_snapshot_reset_bitmap_cache(sb, 0);
@@ -758,9 +764,10 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +
 +
 +#endif
- 
++
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
  	/* Migrate super block on-disk format */
+ 	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
 @@ -311,6 +901,10 @@
  int ext4_snapshot_update(struct super_block *sb, int cleanup, int read_only)
  {
@@ -801,10 +808,10 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
  	return err;
  }
  #else
-Index: linux_dir/fs/ext4/snapshot.h
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.h	2010-11-24 18:15:27.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.h	2010-11-24 18:22:02.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-27 19:42:15.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-27 20:17:03.000000000 +0530
 @@ -105,6 +105,17 @@
  BUFFER_FNS(Partial_Write, partial_write)
  #endif

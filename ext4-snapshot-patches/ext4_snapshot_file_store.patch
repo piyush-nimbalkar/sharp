@@ -1,8 +1,8 @@
 Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 20:07:43.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 20:59:54.000000000 +0530
-@@ -5327,6 +5327,31 @@
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 10:52:35.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 11:12:38.000000000 +0530
+@@ -5325,6 +5325,31 @@
  	 */
  	for (block = 0; block < EXT4_N_BLOCKS; block++)
  		ei->i_data[block] = raw_inode->i_block[block];
@@ -10,7 +10,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +
 +	if (ext4_snapshot_file(inode)) {
 +		ei->i_next_snapshot_ino =
-+			le32_to_cpu(raw_inode->i_next_snapshot);
++			le32_to_cpu(raw_inode->i_disk_version);
 +		/*
 +		 * Dynamic snapshot flags are not stored on-disk, so
 +		 * at this point, we only know that this inode has the
@@ -34,26 +34,29 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	INIT_LIST_HEAD(&ei->i_orphan);
  
  	/*
-@@ -5598,6 +5623,15 @@
+@@ -5596,6 +5621,18 @@
  			cpu_to_le32(inode->i_version >> 32);
  		raw_inode->i_extra_isize = cpu_to_le16(ei->i_extra_isize);
  	}
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
 +	if (ext4_snapshot_file(inode)) {
-+		raw_inode->i_next_snapshot =
++		raw_inode->i_disk_version =
 +			cpu_to_le32(ei->i_next_snapshot_ino);
-+		/* dynamic snapshot flags are not stored on-disk */
++      		/* dynamic snapshot flags are not stored on-disk */
 +		raw_inode->i_flags &= cpu_to_le32(~EXT4_FL_SNAPSHOT_DYN_MASK);
 +	}
-+
++    else
++          raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
++#else
++    raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
 +#endif
  
  	BUFFER_TRACE(bh, "call ext4_handle_dirty_metadata");
  	rc = ext4_handle_dirty_metadata(handle, NULL, bh);
 Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 20:07:43.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 20:59:54.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 10:52:35.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 10:52:54.000000000 +0530
 @@ -153,3 +153,12 @@
  	help
  	  Enforce snapshot file permissions.
@@ -69,9 +72,9 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  and fields are converted.
 Index: linux-2.6.37.1.x/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-26 19:51:47.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-26 21:01:37.000000000 +0530
-@@ -683,6 +683,7 @@
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-29 10:50:02.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-29 10:56:29.000000000 +0530
+@@ -680,6 +680,7 @@
  		struct {
  			__le32  l_i_version;
  		} linux1;
@@ -79,15 +82,3 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  		struct {
  			__u32  h_i_translator;
  		} hurd1;
-@@ -808,7 +809,11 @@
- #define i_disk_version osd1.linux1.l_i_version
- 
- #if defined(__KERNEL__) || defined(__linux__)
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
-+#define i_next_snapshot	osd1.linux1.l_i_version
-+#else
- #define i_reserved1	osd1.linux1.l_i_reserved1
-+#endif
- #define i_file_acl_high	osd2.linux2.l_i_file_acl_high
- #define i_blocks_high	osd2.linux2.l_i_blocks_high
- #define i_uid_low	i_uid

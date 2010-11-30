@@ -1,37 +1,7 @@
-Index: linux_dir/fs/ext4/inode.c
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux_dir.orig/fs/ext4/inode.c	2010-11-24 16:32:13.000000000 +0530
-+++ linux_dir/fs/ext4/inode.c	2010-11-24 17:24:30.000000000 +0530
-@@ -964,7 +964,7 @@
-  * down_read(&EXT4_I(inode)->i_data_sem) if not allocating file system
-  * blocks.
-  */
--+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
- /*
-  * snapshot_map_blocks() command flags are passed to get_blocks_handle() on its
-  * @create argument.  All places in original code call get_blocks_handle()
-@@ -2237,6 +2237,16 @@
- 			BUG_ON(!PageLocked(page));
- 			BUG_ON(PageWriteback(page));
- 
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_COW
-+			if (SNAPMAP_ISCOW(create)) {
-+				/* COWing block or creating COW bitmap */
-+				lock_buffer(bh);
-+				clear_buffer_uptodate(bh);
-+				/* flag locked buffer and return */
-+				*errp = 1;
-+				return bh;
-+			}
-+#endif
- 			/*
- 			 * If the page does not have buffers (for
- 			 * whatever reason), try to create them using
-Index: linux_dir/fs/ext4/Kconfig
-===================================================================
---- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 16:32:13.000000000 +0530
-+++ linux_dir/fs/ext4/Kconfig	2010-11-24 16:33:10.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-27 17:07:11.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-27 17:08:25.000000000 +0530
 @@ -196,3 +196,11 @@
  	  argument values 0(=read) and 1(=create) preserve the original
  	  behavior of the function.  The bit field h_cowing in the current
@@ -44,10 +14,10 @@ Index: linux_dir/fs/ext4/Kconfig
 +	help
 +	  Implementation of copying blocks into a snapshot file.
 +	  This mechanism is used to copy-on-write metadata blocks to snapshot.
-Index: linux_dir/fs/ext4/resize.c
+Index: linux-2.6.37.1.x/fs/ext4/resize.c
 ===================================================================
---- linux_dir.orig/fs/ext4/resize.c	2010-11-24 14:54:59.000000000 +0530
-+++ linux_dir/fs/ext4/resize.c	2010-11-24 16:33:10.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/resize.c	2010-11-26 13:46:22.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/resize.c	2010-11-27 17:08:25.000000000 +0530
 @@ -654,6 +654,16 @@
  		if (err)
            break;
@@ -65,11 +35,11 @@ Index: linux_dir/fs/ext4/resize.c
  		bh = sb_getblk(sb, group * bpg + blk_off);
  		if (!bh) {
  			err = -EIO;
-Index: linux_dir/fs/ext4/snapshot.c
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.c	2010-11-24 16:32:13.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.c	2010-11-24 16:33:10.000000000 +0530
-@@ -131,3 +131,280 @@
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-27 17:07:11.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-27 18:14:47.000000000 +0530
+@@ -133,3 +133,283 @@
  }
  #endif
  
@@ -104,9 +74,12 @@ Index: linux_dir/fs/ext4/snapshot.c
 +
 +	unlock_buffer(sbh);
 +	if (handle) {
++#ifdef WARNING_NOT_IMPLEMENTED
++      /*Patch snapshot_block_cow_patch*/
 +		err = ext4_journal_dirty_data(handle, sbh);
 +		if (err)
 +			goto out;
++#endif
 +	}
 +	mark_buffer_dirty(sbh);
 +	if (sync)
@@ -170,7 +143,7 @@ Index: linux_dir/fs/ext4/snapshot.c
 +		inode_offset = (inode->i_ino - 1) %
 +			EXT4_INODES_PER_GROUP(sb);
 +	}
-+	snapshot_debug_hl(4, "%s(i:%d/%ld, b:%lu/%lu)"
++	snapshot_debug_hl(4, "%s(i:%d/%ld, b:%lld/%lld)"
 +			" h_ref=%d, cmd=%d\n",
 +			where, inode_offset, inode_group,
 +			SNAPSHOT_BLOCK_GROUP_OFFSET(block),
@@ -208,7 +181,7 @@ Index: linux_dir/fs/ext4/snapshot.c
 +	snapshot_debug_hl(4, "} = %d\n", err);
 +	snapshot_debug_hl(4, ".\n");
 +	if (err < 0)
-+		snapshot_debug(1, "%s(b:%lu/%lu) failed!"
++		snapshot_debug(1, "%s(b:%lld/%lld) failed!"
 +				" h_ref=%d, err=%d\n", where,
 +				SNAPSHOT_BLOCK_GROUP_OFFSET(block),
 +				SNAPSHOT_BLOCK_GROUP(block),
@@ -266,7 +239,7 @@ Index: linux_dir/fs/ext4/snapshot.c
 +		 * mark block in exclude bitmap
 +		 */
 +		snapshot_debug_hl(4, "file (%lu) excluded from snapshot - "
-+				"mark block (%lu) in exclude bitmap\n",
++				"mark block (%lld) in exclude bitmap\n",
 +				inode->i_ino, block);
 +		cow = 0;
 +	}
@@ -300,7 +273,7 @@ Index: linux_dir/fs/ext4/snapshot.c
 +	if (!bh || !buffer_mapped(bh))
 +		goto out;
 +	if (!buffer_uptodate(bh)) {
-+		snapshot_debug(1, "warning: non uptodate buffer (%lu)"
++		snapshot_debug(1, "warning: non uptodate buffer (%lld)"
 +				" needs to be copied to active snapshot!\n",
 +				block);
 +		ll_rw_block(READ, 1, &bh);
@@ -332,8 +305,8 @@ Index: linux_dir/fs/ext4/snapshot.c
 +	err = ext4_snapshot_copy_buffer_cow(handle, sbh, bh);
 +	if (err)
 +		goto out;
-+	snapshot_debug(3, "block [%lu/%lu] of snapshot (%u) "
-+			"mapped to block [%lu/%lu]\n",
++	snapshot_debug(3, "block [%lld/%lld] of snapshot (%u) "
++			"mapped to block [%lld/%lld]\n",
 +			SNAPSHOT_BLOCK_TUPLE(block),
 +			active_snapshot->i_generation,
 +			SNAPSHOT_BLOCK_TUPLE(sbh->b_blocknr));
@@ -350,10 +323,10 @@ Index: linux_dir/fs/ext4/snapshot.c
 +}
 +
 +#endif
-Index: linux_dir/fs/ext4/snapshot.h
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.h	2010-11-24 16:32:13.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.h	2010-11-24 16:33:10.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-27 17:07:11.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-27 17:08:25.000000000 +0530
 @@ -150,7 +150,21 @@
  		unsigned int block_group, struct buffer_head *bitmap_bh);
  

@@ -1,7 +1,7 @@
 Index: linux-2.6.37.1.x/fs/ext4/balloc.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/balloc.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/balloc.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/balloc.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/balloc.c	2010-11-29 13:30:22.000000000 +0530
 @@ -9,6 +9,9 @@
   *  Enhanced block allocation by Stephen Tweedie (sct@redhat.com), 1993
   *  Big-endian to little-endian byte-swapping/bitmaps by
@@ -22,8 +22,8 @@ Index: linux-2.6.37.1.x/fs/ext4/balloc.c
   * balloc.c contains the blocks allocation and deallocation routines
 Index: linux-2.6.37.1.x/fs/ext4/file.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/file.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/file.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/file.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/file.c	2010-11-29 13:30:22.000000000 +0530
 @@ -16,6 +16,8 @@
   *
   *  64-bit file support on 64-bit platforms by Jakub Jelinek
@@ -43,8 +43,8 @@ Index: linux-2.6.37.1.x/fs/ext4/file.c
   * Called when an inode is released. Note that this is different
 Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 13:30:22.000000000 +0530
 @@ -20,6 +20,9 @@
   *	(jj@sunsite.ms.mff.cuni.cz)
   *
@@ -65,8 +65,8 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  
 Index: linux-2.6.37.1.x/fs/ext4/ioctl.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ioctl.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ioctl.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ioctl.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ioctl.c	2010-11-29 13:30:22.000000000 +0530
 @@ -5,6 +5,9 @@
   * Remy Card (card@masi.ibp.fr)
   * Laboratoire MASI - Institut Blaise Pascal
@@ -87,8 +87,8 @@ Index: linux-2.6.37.1.x/fs/ext4/ioctl.c
  {
 Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 13:30:22.000000000 +0530
 @@ -1,6 +1,6 @@
  config EXT4_FS
  	tristate "The Extended 4 (ext4) filesystem"
@@ -113,21 +113,21 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
  	depends on EXT4_FS
 Index: linux-2.6.37.1.x/fs/ext4/Makefile
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Makefile	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Makefile	2010-11-26 13:43:49.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Makefile	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Makefile	2010-11-29 13:30:22.000000000 +0530
 @@ -15,6 +15,8 @@
  		ioctl.o namei.o super.o symlink.o hash.o resize.o extents.o \
  		ext4_jbd2.o migrate.o mballoc.o block_validity.o move_extent.o
  
-+ext4-y	+= snapshot.o snapshot_ctl.o 
++ext4-y	+= snapshot.o snapshot_ctl.o
 +
  ext4-$(CONFIG_EXT4_FS_XATTR)		+= xattr.o xattr_user.o xattr_trusted.o
  ext4-$(CONFIG_EXT4_FS_POSIX_ACL)	+= acl.o
  ext4-$(CONFIG_EXT4_FS_SECURITY)		+= xattr_security.o
 Index: linux-2.6.37.1.x/fs/ext4/namei.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/namei.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/namei.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/namei.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/namei.c	2010-11-29 13:30:22.000000000 +0530
 @@ -22,6 +22,9 @@
   *	Christopher Li, 2002
   *  Hash Tree Directory indexing cleanup
@@ -148,8 +148,8 @@ Index: linux-2.6.37.1.x/fs/ext4/namei.c
   * define how far ahead to read directories while searching them.
 Index: linux-2.6.37.1.x/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-29 13:30:22.000000000 +0530
 @@ -11,6 +11,9 @@
   *  linux/include/linux/minix_fs.h
   *
@@ -186,10 +186,20 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  /*
   * The fourth extended filesystem constants/structures
   */
+@@ -1326,6 +1348,9 @@
+ #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
+ #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
+ #define EXT4_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++#define EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT  0x0080 /* Ext4 has snapshots */
++#endif
+ #define EXT4_FEATURE_RO_COMPAT_HUGE_FILE        0x0008
+ #define EXT4_FEATURE_RO_COMPAT_GDT_CSUM		0x0010
+ #define EXT4_FEATURE_RO_COMPAT_DIR_NLINK	0x0020
 Index: linux-2.6.37.1.x/fs/ext4/resize.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/resize.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/resize.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/resize.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/resize.c	2010-11-29 13:30:22.000000000 +0530
 @@ -6,6 +6,9 @@
   * Copyright (C) 2001, 2002 Andreas Dilger <adilger@clusterfs.com>
   *
@@ -211,7 +221,7 @@ Index: linux-2.6.37.1.x/fs/ext4/resize.c
 Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-26 13:23:01.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-29 13:30:22.000000000 +0530
 @@ -0,0 +1,18 @@
 +/*
 + * linux/fs/ext4/snapshot.c
@@ -234,7 +244,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-11-26 13:23:01.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-11-29 13:30:22.000000000 +0530
 @@ -0,0 +1,37 @@
 +/*
 + * linux/fs/ext4/snapshot_ctl.c
@@ -276,7 +286,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
 Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 13:23:01.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 13:30:22.000000000 +0530
 @@ -0,0 +1,149 @@
 +/*
 + * linux/fs/ext4/snapshot.h
@@ -429,8 +439,8 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 +#endif	/* _LINUX_EXT4_SNAPSHOT_H */
 Index: linux-2.6.37.1.x/fs/ext4/super.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/super.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/super.c	2010-11-26 13:40:35.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/super.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/super.c	2010-11-29 13:31:56.000000000 +0530
 @@ -14,6 +14,9 @@
   *
   *  Big-endian to little-endian byte-swapping/bitmaps by
@@ -461,15 +471,18 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	if (sb->s_dirt)
  		ext4_commit_super(sb, 1);
  
-@@ -3043,7 +3052,21 @@
+@@ -3043,7 +3052,22 @@
  			   ext4_li_info->li_task == NULL);
  	}
  }
+-
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT
-+static char *data_mode_string(unsigned long mode)
++static char *journal_mode_string(struct super_block *sb)
 +{
-+	switch (mode) {
-+	case EXT4_MOUNT_JOURNAL_DATA:
++  switch (test_opt(sb,DATA_FLAGS)) {
++	case 0:
++      return "no-journal";
++    case EXT4_MOUNT_JOURNAL_DATA:
 +		return "journal";
 +	case EXT4_MOUNT_ORDERED_DATA:
 +		return "ordered";
@@ -478,18 +491,17 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
 +	}
 +	return "unknown";
 +}
- 
 +#endif
  static int ext4_fill_super(struct super_block *sb, void *data, int silent)
  				__releases(kernel_lock)
  				__acquires(kernel_lock)
-@@ -3217,8 +3240,13 @@
+@@ -3217,8 +3241,13 @@
  
  	blocksize = BLOCK_SIZE << le32_to_cpu(es->s_log_block_size);
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT
 +	/* Block size must be equal to page size */
-+	if (blocksize != SNAPSHOT_BLOCK_SIZE) {
++	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT) && blocksize != SNAPSHOT_BLOCK_SIZE) {
 +#else
  	if (blocksize < EXT4_MIN_BLOCK_SIZE ||
  	    blocksize > EXT4_MAX_BLOCK_SIZE) {
@@ -497,33 +509,28 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  		ext4_msg(sb, KERN_ERR,
  		       "Unsupported filesystem blocksize %d", blocksize);
  		goto failed_mount;
-@@ -3561,7 +3589,25 @@
+@@ -3561,7 +3590,20 @@
  		printk(KERN_ERR "EXT4-fs: failed to create DIO workqueue\n");
  		goto failed_mount_wq;
  	}
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT
-+
+ 
 +	/* Ext4 unsupported features */
-+	if (EXT4_SB(sb)->s_journal) {
-+      if (test_opt(sb,DATA_FLAGS) != EXT4_MOUNT_ORDERED_DATA) {
-+		printk(KERN_ERR "EXT4-fs: data=%s mode is not supported\n",
-+               data_mode_string(test_opt(sb,DATA_FLAGS)));
++ if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT) && (!EXT4_SB(sb)->s_journal || test_opt(sb,DATA_FLAGS) != EXT4_MOUNT_ORDERED_DATA)) {
++              printk(KERN_ERR "EXT4-fs: %s mode is not supported\n",journal_mode_string(sb));
 +		goto failed_mount3;
 +      }
-+    }
-+    else
-+      printk(KERN_ERR "EXT4-fs: data=Out journal mode is not supported\n");
-+	if (sbi->s_jquota_fmt) {
++    if (sbi->s_jquota_fmt) {
 +		printk(KERN_ERR "EXT4-fs: journaled quota options are not "
 +				"supported.\n");
 +		goto failed_mount3;
 +	}
- 
++
 +#endif
  	/*
  	 * The jbd2_journal_load will have done any necessary log recovery,
  	 * so we can safely mount the rest of the filesystem now.
-@@ -3588,6 +3634,13 @@
+@@ -3588,6 +3630,13 @@
  
  	ext4_setup_super(sb, es, sb->s_flags & MS_RDONLY);
  
@@ -537,7 +544,7 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	/* determine the minimum size of new large inodes, if present */
  	if (sbi->s_inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
  		sbi->s_want_extra_isize = sizeof(struct ext4_inode) -
-@@ -4878,10 +4931,18 @@
+@@ -4878,10 +4927,18 @@
  	err = register_filesystem(&ext4_fs_type);
  	if (err)
  		goto out;
@@ -557,7 +564,7 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  out:
  	unregister_as_ext2();
  	unregister_as_ext3();
-@@ -4903,6 +4964,9 @@
+@@ -4903,6 +4960,9 @@
  
  static void __exit ext4_exit_fs(void)
  {
@@ -569,8 +576,8 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	unregister_as_ext3();
 Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.c	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.c	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c	2010-11-29 13:30:22.000000000 +0530
 @@ -1,8 +1,12 @@
  /*
   * Interface between ext4 and JBD
@@ -586,8 +593,8 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
  
 Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-26 13:22:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-26 13:23:01.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-29 13:19:36.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-29 13:30:22.000000000 +0530
 @@ -10,6 +10,9 @@
   * option, any later version, incorporated herein by reference.
   *

@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1+/fs/ext4/inode.c
+Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/inode.c	2010-11-26 21:57:30.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/inode.c	2010-11-26 21:59:27.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 10:07:01.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 10:15:44.000000000 +0530
 @@ -974,6 +974,26 @@
  
  	partial = ext4_get_branch(inode, depth, offsets, chain, &err);
@@ -29,36 +29,34 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	/* Simplest case - block found, no allocation needed */
  	if (!partial) {
  		first_block = le32_to_cpu(chain[depth - 1].key);
-@@ -1017,6 +1037,45 @@
- 				&count, goal,
- 				offsets + (partial - chain), partial);
+@@ -1019,6 +1039,43 @@
+ 	if (err)
+ 		goto out_mutex;
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 +	if (*(partial->p)) {
 +      int ret;
++#ifdef WARNING_NOT_IMPLEMENTED
 +      /* old block is being replaced with a new block */
-+      // if (buffer_partial_write(bh_result) &&
-+      //  !buffer_uptodate(bh_result)) {
-+        /* read old block data before moving it to snapshot */
-+
-+
-+        //map_bh(bh_result, inode->i_sb,
-+      //     le32_to_cpu(*(partial->p)));
-+
-+
-+      //ll_rw_block(READ, 1, &bh_result);
-+      //wait_on_buffer(bh_result);
++       if (buffer_partial_write(bh_result) &&
++        !buffer_uptodate(bh_result)) {
++       /* read old block data before moving it to snapshot */
++      map_bh(bh_result, inode->i_sb,
++           le32_to_cpu(*(partial->p)));
++      ll_rw_block(READ, 1, &bh_result);
++      wait_on_buffer(bh_result);
 +        /* clear old block mapping */
-+        //clear_buffer_mapped(bh_result); //JAMNARE
-+      // if (!buffer_uptodate(bh_result)) { //JAMNARE
-+      //  err = -EIO;
-+      //  goto out_mutex;
-+      // }
-+      //}
-+      // if (buffer_partial_write(bh_result))
++        clear_buffer_mapped(bh_result); //JAMNARE
++      if (!buffer_uptodate(bh_result)) { //JAMNARE
++        err = -EIO;
++        goto out_mutex;
++       }
++      }
++       if (buffer_partial_write(bh_result))
 +        /* prevent zero out of page in block_write_begin() */
-+        //SetPageUptodate(bh_result->b_page);
++       /SetPageUptodate(bh_result->b_page);
 +		/* move old block to snapshot */
++#endif
 +      ret = ext4_snapshot_get_move_access(handle, inode,
 +                                          le32_to_cpu(*(partial->p)), 1);
 +      if (ret < 1) {
@@ -75,15 +73,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	/*
  	 * The ext4_splice_branch call will free and forget any buffers
  	 * on the new chain if there is a failure, but that risks using
-@@ -1027,6 +1086,7 @@
- 	if (!err)
- 		err = ext4_splice_branch(handle, inode, map->m_lblk,
- 					 partial, indirect_blks, count);
-+ out_mutex:
- 	if (err)
- 		goto cleanup;
- 
-@@ -1593,6 +1653,9 @@
+@@ -1596,6 +1653,9 @@
  			    loff_t pos, unsigned len, unsigned flags,
  			    struct page **pagep, void **fsdata)
  {
@@ -93,15 +83,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	struct inode *inode = mapping->host;
  	int ret, needed_blocks;
  	handle_t *handle;
-@@ -1617,7 +1680,6 @@
- 		ret = PTR_ERR(handle);
- 		goto out;
- 	}
--
- 	/* We cannot recurse into the filesystem as the transaction is already
- 	 * started */
- 	flags |= AOP_FLAG_NOFS;
-@@ -1629,6 +1691,35 @@
+@@ -1632,6 +1691,35 @@
  		goto out;
  	}
  	*pagep = page;
@@ -137,7 +119,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  
  	if (ext4_should_dioread_nolock(inode))
  		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
-@@ -1639,6 +1730,14 @@
+@@ -1642,6 +1730,14 @@
  		ret = walk_page_buffers(handle, page_buffers(page),
  				from, to, NULL, do_journal_get_write_access);
  	}
@@ -152,7 +134,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  
  	if (ret) {
  		unlock_page(page);
-@@ -4036,6 +4135,20 @@
+@@ -4242,6 +4338,20 @@
  			goto unlock;
  	}
  
@@ -173,10 +155,10 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	if (ext4_should_journal_data(inode)) {
  		BUFFER_TRACE(bh, "get write access");
  		err = ext4_journal_get_write_access(handle, bh);
-Index: linux-2.6.37.1+/fs/ext4/Kconfig
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/Kconfig	2010-11-26 21:57:30.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/Kconfig	2010-11-26 21:58:19.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 10:11:53.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 10:13:48.000000000 +0530
 @@ -117,3 +117,13 @@
  	  Before deleting file blocks in ext4_free_blocks(),
  	  we call the snapshot API snapshot_get_delete_access(),
@@ -191,10 +173,10 @@ Index: linux-2.6.37.1+/fs/ext4/Kconfig
 +	  the function ext4_get_block() is called to map the buffer to disk.
 +	  We use this hook to call the snapshot API snapshot_get_move_access(),
 +	  to optionally move the block to the snapshot file.
-Index: linux-2.6.37.1+/fs/ext4/snapshot.h
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/snapshot.h	2010-11-26 21:57:30.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/snapshot.h	2010-11-26 21:58:19.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 10:11:53.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 10:34:20.000000000 +0530
 @@ -97,6 +97,13 @@
  #define SNAPSHOT_SET_DISABLED(inode)		\
  	i_size_write((inode), 0)
@@ -243,7 +225,7 @@ Index: linux-2.6.37.1+/fs/ext4/snapshot.h
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DELETE
  /*
   * get_delete_access() - move count blocks to snapshot
-@@ -220,6 +254,18 @@
+@@ -220,6 +254,20 @@
  
  
  
@@ -254,6 +236,8 @@ Index: linux-2.6.37.1+/fs/ext4/snapshot.h
 +static inline int ext4_snapshot_should_move_data(struct inode *inode)
 +{
 +	/* when a data block is journaled, it is already COWed as metadata */
++    if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
++      return 0;
 +	if (ext4_should_journal_data(inode))
 +		return 0;
 +	return 1;

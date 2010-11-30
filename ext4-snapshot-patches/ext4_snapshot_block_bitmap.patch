@@ -1,7 +1,8 @@
-diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
---- a/fs/ext4/Kconfig	2010-11-11 10:47:30.000000000 +0200
-+++ b/fs/ext4/Kconfig	2010-11-11 10:47:29.000000000 +0200
-@@ -225,3 +225,12 @@ config EXT4_FS_SNAPSHOT_BLOCK_MOVE
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 12:45:04.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 12:45:46.000000000 +0530
+@@ -214,3 +214,12 @@
  	  The move block command maps an allocated blocks to the snapshot file,
  	  allocating only the indirect blocks when needed.
  	  This mechanism is used to move-on-write data blocks to snapshot.
@@ -14,10 +15,11 @@ diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
 +	  The snapshot copy of the file system block bitmap is called the COW
 +	  bitmap and it is used to check if a block was allocated at the time
 +	  that the snapshot was taken.
-diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
---- a/fs/ext4/snapshot.c	2010-11-11 10:47:30.000000000 +0200
-+++ b/fs/ext4/snapshot.c	2010-11-11 10:47:29.000000000 +0200
-@@ -150,6 +150,28 @@ __ext4_snapshot_copy_buffer(struct buff
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-29 12:45:04.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-29 12:45:46.000000000 +0530
+@@ -152,6 +152,28 @@
  	set_buffer_uptodate(sbh);
  }
  
@@ -46,7 +48,7 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
  
  /*
   * ext4_snapshot_complete_cow()
-@@ -203,13 +225,246 @@ void ext4_snapshot_copy_buffer(struct b
+@@ -208,13 +230,246 @@
  		struct buffer_head *bh, const char *mask)
  {
  	lock_buffer(sbh);
@@ -156,7 +158,7 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
 +{
 +	struct super_block *sb = snapshot->i_sb;
 +	struct ext4_sb_info *sbi = EXT4_SB(sb);
-+	struct ext4_group_info *gi = sbi->s_group_info + block_group;
++	struct ext4_group_info *gi = sbi->s_snapshot_group_info + block_group;
 +	struct ext4_group_desc *desc;
 +	struct buffer_head *cow_bh;
 +	ext4_fsblk_t bitmap_blk;
@@ -167,11 +169,11 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
 +	if (!desc)
 +		return NULL;
 +
-+	bitmap_blk = le32_to_cpu(desc->bg_block_bitmap);
++	bitmap_blk = ext4_block_bitmap(sb,desc);
 +
-+	spin_lock(sb_bgl_lock(sbi, block_group));
++	ext4_lock_group(sb,block_group);
 +	cow_bitmap_blk = gi->bg_cow_bitmap;
-+	spin_unlock(sb_bgl_lock(sbi, block_group));
++	ext4_unlock_group(sb,block_group);
 +	if (cow_bitmap_blk)
 +		return sb_bread(sb, cow_bitmap_blk);
 +
@@ -219,7 +221,7 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
 +		/* initialized COW bitmap block */
 +		cow_bitmap_blk = cow_bh->b_blocknr;
 +		snapshot_debug(3, "COW bitmap #%u of snapshot (%u) "
-+				"mapped to block [%lu/%lu]\n",
++				"mapped to block [%lld/%lld]\n",
 +				block_group, snapshot->i_generation,
 +				SNAPSHOT_BLOCK_GROUP_OFFSET(cow_bitmap_blk),
 +				SNAPSHOT_BLOCK_GROUP(cow_bitmap_blk));
@@ -233,9 +235,9 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
 +	}
 +
 +	/* update or reset COW bitmap cache */
-+	spin_lock(sb_bgl_lock(sbi, block_group));
++      ext4_lock_group(sb, block_group);
 +	gi->bg_cow_bitmap = cow_bitmap_blk;
-+	spin_unlock(sb_bgl_lock(sbi, block_group));
++    ext4_unlock_group(sb, block_group);
 +
 +	return cow_bh;
 +}
@@ -293,7 +295,7 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
  
  
  /*
-@@ -332,8 +587,16 @@ int ext4_snapshot_test_and_cow(const ch
+@@ -337,8 +592,16 @@
  		cow = 0;
  	}
  
@@ -310,7 +312,7 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
  	if (!err) {
  		trace_cow_inc(handle, ok_bitmap);
  		goto cowed;
-@@ -455,8 +718,17 @@ int ext4_snapshot_test_and_move(const c
+@@ -460,8 +723,17 @@
  		move = 0;
  	}
  
@@ -328,10 +330,11 @@ diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
  	if (!err) {
  		/* block not in COW bitmap - no need to move */
  		trace_cow_inc(handle, ok_bitmap);
-diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
---- a/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:30.000000000 +0200
-+++ b/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:29.000000000 +0200
-@@ -90,7 +90,31 @@ static int ext4_snapshot_set_active(str
+Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot_ctl.c	2010-11-29 12:19:39.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-11-29 12:48:14.000000000 +0530
+@@ -90,7 +90,31 @@
  }
  #endif
  
@@ -347,7 +350,7 @@ diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
 + */
 +static int ext4_snapshot_reset_bitmap_cache(struct super_block *sb, int init)
 +{
-+	struct ext4_group_info *gi = EXT4_SB(sb)->s_group_info;
++	struct ext4_group_info *gi = EXT4_SB(sb)->s_snapshot_group_info;
 +	int i;
 +
 +	for (i = 0; i < EXT4_SB(sb)->s_groups_count; i++, gi++) {
@@ -363,10 +366,11 @@ diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
  
  
  /*
-diff -Nuarp a/fs/ext4/snapshot.h b/fs/ext4/snapshot.h
---- a/fs/ext4/snapshot.h	2010-11-11 10:47:30.000000000 +0200
-+++ b/fs/ext4/snapshot.h	2010-11-11 10:47:29.000000000 +0200
-@@ -215,7 +215,15 @@ static inline int ext4_snapshot_get_wri
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 12:45:04.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 12:45:46.000000000 +0530
+@@ -215,7 +215,15 @@
  static inline int ext4_snapshot_get_undo_access(handle_t *handle,
  		struct buffer_head *bh)
  {

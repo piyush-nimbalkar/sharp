@@ -1,7 +1,7 @@
 Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 20:59:54.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 21:08:29.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 14:52:37.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-30 17:59:00.000000000 +0530
 @@ -326,6 +326,9 @@
  		double_blocks = (1 << (ptrs_bits * 2));
  	int n = 0;
@@ -31,7 +31,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	} else {
  		ext4_warning(inode->i_sb, "block %lu > max in inode %lu",
  			     i_block + direct_blocks +
-@@ -4888,6 +4903,15 @@
+@@ -4887,6 +4902,15 @@
  	ext4_lblk_t last_block;
  	unsigned blocksize = inode->i_sb->s_blocksize;
  
@@ -47,7 +47,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
  	/* prevent truncate of files on snapshot list */
  	if (ext4_snapshot_list(inode)) {
-@@ -5014,6 +5038,22 @@
+@@ -5013,6 +5037,22 @@
  		;
  	}
  
@@ -70,46 +70,18 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	up_write(&ei->i_data_sem);
  	inode->i_mtime = inode->i_ctime = ext4_current_time(inode);
  	ext4_mark_inode_dirty(handle, inode);
-@@ -5239,7 +5279,21 @@
+@@ -5238,8 +5278,8 @@
  	struct inode *inode = &(ei->vfs_inode);
  	struct super_block *sb = inode->i_sb;
  
 -	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
-+	if (ext4_snapshot_file(inode)) {
-+		/* we never set i_blocks_high, but fsck may do it when it fixes
-+		   i_blocks */
-+		i_blocks = ((u64)le16_to_cpu(raw_inode->i_blocks_high)) << 32 |
-+					le32_to_cpu(raw_inode->i_blocks_lo);
-+		if (ei->i_flags & EXT4_HUGE_FILE_FL) {
-+			/* i_blocks represent file system block size */
-+			return i_blocks  << (inode->i_blkbits - 9);
-+		} else {
-+			return i_blocks;
-+		}
-+	} else
-+#endif
+-				EXT4_FEATURE_RO_COMPAT_HUGE_FILE)) {
 + 	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
- 				EXT4_FEATURE_RO_COMPAT_HUGE_FILE)) {
++				EXT4_FEATURE_RO_COMPAT_HUGE_FILE) || (ext4_snapshot_file(inode))) {
  		/* we are using combined 48 bit field */
  		i_blocks = ((u64)le16_to_cpu(raw_inode->i_blocks_high)) << 32 |
-@@ -5307,9 +5361,15 @@
- 		 * recovery code: that's fine, we're about to complete
- 		 * the process of deleting those. */
- 	}
-+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
-+	ei->i_flags = le32_to_cpu(raw_inode->i_flags);
-+	inode->i_blocks = ext4_inode_blocks(raw_inode, ei);
-+#else
-+
- 	ei->i_flags = le32_to_cpu(raw_inode->i_flags);
- 	inode->i_blocks = ext4_inode_blocks(raw_inode, ei);
- 	ei->i_file_acl = le32_to_cpu(raw_inode->i_file_acl_lo);
-+#endif
- 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_64BIT))
- 		ei->i_file_acl |=
- 			((__u64)le16_to_cpu(raw_inode->i_file_acl_high)) << 32;
-@@ -5330,6 +5390,20 @@
+ 					le32_to_cpu(raw_inode->i_blocks_lo);
+@@ -5329,6 +5369,20 @@
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
  
  	if (ext4_snapshot_file(inode)) {
@@ -128,31 +100,38 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +		}
 +#endif
  		ei->i_next_snapshot_ino =
- 			le32_to_cpu(raw_inode->i_next_snapshot);
+ 			le32_to_cpu(raw_inode->i_disk_version);
  		/*
-@@ -5495,7 +5569,11 @@
+@@ -5492,9 +5546,15 @@
+ 		ext4_clear_inode_flag(inode, EXT4_INODE_HUGE_FILE);
+ 		return 0;
  	}
- 	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE))
- 		return -EFBIG;
--
+-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE))
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
 +	/* snapshot files may be represented as huge files */
-+	if (!ext4_snapshot_file(inode))
++    if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE) && (!ext4_snapshot_file(inode)))
+ 		return -EFBIG;
++#else
+ 
++	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE))
 +		return -EFBIG;
 +#endif
  	if (i_blocks <= 0xffffffffffffULL) {
  		/*
  		 * i_blocks can be represented in a 48 bit variable
-@@ -5581,7 +5659,7 @@
+@@ -5579,10 +5639,7 @@
+ 	ext4_isize_set(raw_inode, ei->i_disksize);
  	if (ei->i_disksize > 0x7fffffffULL) {
  		struct super_block *sb = inode->i_sb;
- 		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
+-		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
 -				EXT4_FEATURE_RO_COMPAT_LARGE_FILE) ||
-+                                        EXT4_FEATURE_RO_COMPAT_LARGE_FILE) ||
- 				EXT4_SB(sb)->s_es->s_rev_level ==
- 				cpu_to_le32(EXT4_GOOD_OLD_REV)) {
+-				EXT4_SB(sb)->s_es->s_rev_level ==
+-				cpu_to_le32(EXT4_GOOD_OLD_REV)) {
++		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,EXT4_FEATURE_RO_COMPAT_LARGE_FILE) || EXT4_SB(sb)->s_es->s_rev_level == cpu_to_le32(EXT4_GOOD_OLD_REV)) {
  			/* If this is the first large file
-@@ -5625,6 +5703,19 @@
+ 			 * created, add a flag to the superblock.
+ 			 */
+@@ -5624,6 +5681,19 @@
  	}
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
  	if (ext4_snapshot_file(inode)) {
@@ -169,10 +148,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +				ei->i_data[block];
 +		}
 +#endif
- 		raw_inode->i_next_snapshot =
+ 		raw_inode->i_disk_version =
  			cpu_to_le32(ei->i_next_snapshot_ino);
- 		/* dynamic snapshot flags are not stored on-disk */
-@@ -5641,6 +5732,12 @@
+       		/* dynamic snapshot flags are not stored on-disk */
+@@ -5643,6 +5713,12 @@
  
  	ext4_update_inode_fsync_trans(handle, inode, 0);
  out_brelse:
@@ -187,8 +166,8 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	return err;
 Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 20:59:54.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 21:05:51.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 14:52:37.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-30 17:55:50.000000000 +0530
 @@ -162,3 +162,16 @@
  	  Snapshot inode is stored differently in memory and on disk.
  	  During store and load of snapshot inode, some of the inode flags
@@ -208,8 +187,8 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  of direct blocks, which are not in use by snapshot files.
 Index: linux-2.6.37.1.x/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-26 21:01:37.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-26 21:05:51.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-29 14:52:37.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-30 17:55:50.000000000 +0530
 @@ -344,6 +344,21 @@
  #define	EXT4_DIND_BLOCK			(EXT4_IND_BLOCK + 1)
  #define	EXT4_TIND_BLOCK			(EXT4_DIND_BLOCK + 1)
@@ -232,7 +211,7 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  
  /*
   * Inode flags
-@@ -851,7 +866,11 @@
+@@ -844,7 +859,11 @@
   * fourth extended file system inode data in memory
   */
  struct ext4_inode_info {
@@ -246,8 +225,8 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  
 Index: linux-2.6.37.1.x/fs/ext4/super.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/super.c	2010-11-26 20:59:54.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/super.c	2010-11-26 21:05:51.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/super.c	2010-11-29 14:49:48.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/super.c	2010-11-30 17:55:50.000000000 +0530
 @@ -2312,7 +2312,11 @@
  
  	res += 1LL << (bits-2);
@@ -260,22 +239,17 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	res <<= bits;
  	if (res > upper_limit)
  		res = upper_limit;
-@@ -3249,6 +3253,18 @@
- 		goto failed_mount;
+@@ -3289,8 +3293,13 @@
+ 		}
+ 	}
  
- 	blocksize = BLOCK_SIZE << le32_to_cpu(es->s_log_block_size);
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
-+	/*
-+	 * Large file size enabled file system can only be mounted
-+	 * read-write on 32-bit systems if kernel is built with CONFIG_LBDAF
-+	 */
-+	if (!(sb->s_flags & MS_RDONLY) && sizeof(blkcnt_t) < sizeof(u64)) {
-+		printk(KERN_ERR "EXT4-fs: Filesystem with snapshots support "
-+				"cannot be mounted RDWR without "
-+				"CONFIG_LBDAF");
-+		goto failed_mount;
-+	}
+ 	has_huge_files = EXT4_HAS_RO_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_RO_COMPAT_HUGE_FILE | EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
++#else
++    has_huge_files = EXT4_HAS_RO_COMPAT_FEATURE(sb,
+ 				EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
 +#endif
- 
- #ifdef CONFIG_EXT4_FS_SNAPSHOT
- 	/* Block size must be equal to page size */
+ 	sbi->s_bitmap_maxbytes = ext4_max_bitmap_size(sb->s_blocksize_bits,
+ 						      has_huge_files);
+ 	sb->s_maxbytes = ext4_max_size(sb->s_blocksize_bits, has_huge_files);

@@ -1,7 +1,7 @@
-Index: linux_dir/fs/ext4/inode.c
+Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux_dir.orig/fs/ext4/inode.c	2010-11-24 17:25:27.000000000 +0530
-+++ linux_dir/fs/ext4/inode.c	2010-11-24 18:12:49.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-27 17:20:17.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-27 19:18:06.000000000 +0530
 @@ -663,6 +663,13 @@
  			new_blocks[index++] = current_block++;
  			count--;
@@ -46,7 +46,7 @@ Index: linux_dir/fs/ext4/inode.c
 +		num = 0;
 +		if (indirect_blks > 0) {
 +			/* allocating only indirect blocks */
-+			ext4_alloc_blocks(handle, inode, goal, indirect_blks,
++          ext4_alloc_blocks(handle, inode, iblock, goal, indirect_blks,
 +					0, new_blocks, &err);
 +			if (err)
 +				return err;
@@ -96,19 +96,21 @@ Index: linux_dir/fs/ext4/inode.c
  {
  	int i;
  	int err = 0;
-@@ -894,6 +939,11 @@
+@@ -894,6 +939,13 @@
  		for (i = 1; i < blks; i++)
  			*(where->p + i) = cpu_to_le32(current_block++);
  	}
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
++#ifdef WARNING_NOT_IMPLEMENTED
 +	if (SNAPMAP_ISMOVE(cmd))
 +		/* don't update i_block_alloc_info with moved block */
 +		block_i = NULL;
 +#endif
++#endif
  
  	/* We are done with atomic stuff, now do the rest of housekeeping */
  	/* had we spliced it onto indirect block? */
-@@ -930,9 +980,17 @@
+@@ -930,9 +982,17 @@
  		ext4_free_blocks(handle, inode, where[i].bh, 0, 1,
  				 EXT4_FREE_BLOCKS_FORGET);
  	}
@@ -127,14 +129,14 @@ Index: linux_dir/fs/ext4/inode.c
  	return err;
  }
  
-@@ -1093,9 +1151,15 @@
+@@ -1093,9 +1153,15 @@
  	/*
  	 * Block out ext4_truncate while we alter the tree
  	 */
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
-+	err = ext4_alloc_branch_cow(handle, inode, iblock, indirect_blks,
++	err = ext4_alloc_branch_cow(handle, inode, map->m_lblk, indirect_blks,
 +				     &count, goal, offsets + (partial - chain),
-+				     partial, create);
++				     partial, flags);
 +#else
  	err = ext4_alloc_branch(handle, inode, map->m_lblk, indirect_blks,
  				&count, goal,
@@ -143,13 +145,13 @@ Index: linux_dir/fs/ext4/inode.c
  	if (err)
  		goto out_mutex;
  
-@@ -1148,8 +1212,13 @@
+@@ -1146,8 +1212,13 @@
  	 * may need to return -EAGAIN upwards in the worst case.  --sct
  	 */
  	if (!err)
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
-+		err = ext4_splice_branch_cow(handle, inode, iblock, partial,
-+					      indirect_blks, count, create);
++		err = ext4_splice_branch_cow(handle, inode, map->m_lblk, partial,
++					      indirect_blks, count, flags);
 +#else
  		err = ext4_splice_branch(handle, inode, map->m_lblk,
  					 partial, indirect_blks, count);
@@ -157,10 +159,10 @@ Index: linux_dir/fs/ext4/inode.c
   out_mutex:
  	if (err)
  		goto cleanup;
-Index: linux_dir/fs/ext4/Kconfig
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 17:25:27.000000000 +0530
-+++ linux_dir/fs/ext4/Kconfig	2010-11-24 17:28:26.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-27 18:16:20.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-27 18:17:07.000000000 +0530
 @@ -204,3 +204,13 @@
  	help
  	  Implementation of copying blocks into a snapshot file.
@@ -175,10 +177,10 @@ Index: linux_dir/fs/ext4/Kconfig
 +	  The move block command maps an allocated blocks to the snapshot file,
 +	  allocating only the indirect blocks when needed.
 +	  This mechanism is used to move-on-write data blocks to snapshot.
-Index: linux_dir/fs/ext4/snapshot.c
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.c	2010-11-24 17:25:27.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.c	2010-11-24 17:28:26.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-27 18:16:20.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-27 18:17:07.000000000 +0530
 @@ -12,6 +12,9 @@
   * Ext4 snapshots core functions.
   */
@@ -187,9 +189,9 @@ Index: linux_dir/fs/ext4/snapshot.c
 +#include <linux/quotaops.h>
 +#endif
  #include "snapshot.h"
+ #include "ext4.h"
  
- #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
-@@ -408,3 +411,109 @@
+@@ -413,3 +416,109 @@
  }
  
  #endif
@@ -299,10 +301,10 @@ Index: linux_dir/fs/ext4/snapshot.c
 +}
 +
 +#endif
-Index: linux_dir/fs/ext4/snapshot.h
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.h	2010-11-24 17:25:27.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.h	2010-11-24 17:28:26.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-27 18:16:20.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-27 18:17:07.000000000 +0530
 @@ -166,7 +166,21 @@
  #define ext4_snapshot_cow(handle, inode, bh, cow) 0
  #endif

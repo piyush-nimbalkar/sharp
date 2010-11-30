@@ -1,12 +1,12 @@
-Index: linux_dir/fs/ext4/inode.c
+Index: linux-2.6.37.1.x/fs/ext4/inode.c
 ===================================================================
---- linux_dir.orig/fs/ext4/inode.c	2010-11-24 15:46:00.000000000 +0530
-+++ linux_dir/fs/ext4/inode.c	2010-11-24 16:02:44.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 12:26:33.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 12:28:00.000000000 +0530
 @@ -964,6 +964,14 @@
   * down_read(&EXT4_I(inode)->i_data_sem) if not allocating file system
   * blocks.
   */
-++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
 +/*
 + * snapshot_map_blocks() command flags are passed to get_blocks_handle() on its
 + * @create argument.  All places in original code call get_blocks_handle()
@@ -17,10 +17,10 @@ Index: linux_dir/fs/ext4/inode.c
  static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
  			       struct ext4_map_blocks *map,
  			       int flags)
-Index: linux_dir/fs/ext4/Kconfig
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
---- linux_dir.orig/fs/ext4/Kconfig	2010-11-24 15:48:31.000000000 +0530
-+++ linux_dir/fs/ext4/Kconfig	2010-11-24 15:56:43.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 12:26:33.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 12:36:58.000000000 +0530
 @@ -184,3 +184,15 @@
  	  Snapshot flags and super block field positions have changed.
  	  When old has_snapshot flag is set, copy fields to new position,
@@ -37,13 +37,15 @@ Index: linux_dir/fs/ext4/Kconfig
 +	  argument values 0(=read) and 1(=create) preserve the original
 +	  behavior of the function.  The bit field h_cowing in the current
 +	  transaction handle is used to prevent COW recursions.
-Index: linux_dir/fs/ext4/snapshot.c
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.c	2010-11-24 15:41:17.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.c	2010-11-24 15:56:43.000000000 +0530
-@@ -14,6 +14,49 @@
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-29 12:26:33.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-29 12:36:58.000000000 +0530
+@@ -13,7 +13,52 @@
+  */
  
  #include "snapshot.h"
++#include "ext4.h"
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
 +#define snapshot_debug_hl(n, f, a...)	snapshot_debug_l(n, handle ? 	\
@@ -64,26 +66,27 @@ Index: linux_dir/fs/ext4/snapshot.c
 +			      ext4_snapblk_t block, unsigned long maxblocks,
 +			      ext4_fsblk_t *mapped, int cmd)
 +{
-+	struct buffer_head dummy;
 +	int err;
-+
-+	dummy.b_state = 0;
-+	dummy.b_blocknr = 0;
-+	err = ext4_get_blocks_handle(handle, inode, SNAPSHOT_IBLOCK(block),
-+				      maxblocks, &dummy, cmd);
++    struct ext4_map_blocks map;
++    map.m_len=maxblocks;
++    map.m_pblk=SNAPSHOT_IBLOCK(block);
++#ifdef WARNING_NOT_IMPLEMENTED
++    map.m_flag=?;
++#endif
++	err = ext4_map_blocks(handle,inode,&map,cmd);
 +	/*
 +	 * ext4_get_blocks_handle() returns number of blocks
 +	 * mapped. 0 in case of a HOLE.
 +	 */
 +	if (mapped && err > 0)
-+		*mapped = dummy.b_blocknr;
++      *mapped=map.m_pblk;
 +
 +	snapshot_debug_hl(4, "snapshot (%u) map_blocks "
-+			"[%lu/%lu] = [%lu/%lu] "
++			"[%lld/%lld] = [%lld/%lld] "
 +			"cmd=%d, maxblocks=%lu, mapped=%d\n",
 +			inode->i_generation,
 +			SNAPSHOT_BLOCK_TUPLE(block),
-+			SNAPSHOT_BLOCK_TUPLE(dummy.b_blocknr),
++			SNAPSHOT_BLOCK_TUPLE(map.m_pblk),
 +			cmd, maxblocks, err);
 +	return err;
 +}
@@ -91,7 +94,7 @@ Index: linux_dir/fs/ext4/snapshot.c
  
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
  /*
-@@ -31,6 +74,29 @@
+@@ -31,6 +76,29 @@
  {
  	struct ext4_inode_info *ei = EXT4_I(inode);
  	unsigned int flags = ei->i_flags;
@@ -121,10 +124,10 @@ Index: linux_dir/fs/ext4/snapshot.c
  
  	if (!(flags & EXT4_SNAPFILE_LIST_FL)) {
  		return 0;
-Index: linux_dir/fs/ext4/snapshot.h
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
---- linux_dir.orig/fs/ext4/snapshot.h	2010-11-24 15:41:17.000000000 +0530
-+++ linux_dir/fs/ext4/snapshot.h	2010-11-24 15:56:43.000000000 +0530
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 12:26:33.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 12:36:58.000000000 +0530
 @@ -106,6 +106,50 @@
  #endif
  
@@ -176,3 +179,61 @@ Index: linux_dir/fs/ext4/snapshot.h
  #define ext4_snapshot_cow(handle, inode, bh, cow) 0
  
  #define ext4_snapshot_move(handle, inode, block, num, move) (num)
+Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-29 12:37:51.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-29 12:42:27.000000000 +0530
+@@ -105,6 +105,53 @@
+ #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++
++/*
++ * This struct is binary compatible to struct handle_s in include/linux/jbd.h
++ * for building a standalone ext4 module.
++ * XXX: be aware of changes to the original struct!!!
++ */
++struct ext4_handle_s
++{
++	/* Which compound transaction is this update a part of? */
++	transaction_t		*h_transaction;
++
++	/* Number of remaining buffers we are allowed to dirty: */
++	int			h_buffer_credits;
++
++	/* Reference count on this handle */
++	int			h_ref;
++
++	/* Field for caller's use to track errors through large fs */
++	/* operations */
++	int			h_err;
++
++	/* Flags [no locking] */
++	unsigned int	h_sync:		1;	/* sync-on-close */
++	unsigned int	h_jdata:	1;	/* force data journaling */
++	unsigned int	h_aborted:	1;	/* fatal error on handle */
++	unsigned int	h_cowing:	1;	/* COWing block to snapshot */
++
++#ifdef CONFIG_DEBUG_LOCK_ALLOC
++	struct lockdep_map	h_lockdep_map;
++#endif
++};
++
++#ifndef _EXT4_HANDLE_T
++#define _EXT4_HANDLE_T
++typedef struct ext4_handle_s		ext4_handle_t;	/* Ext4 COW handle */
++#endif
++
++#define IS_COWING(handle) \
++	((ext4_handle_t *)(handle))->h_cowing
++
++#define trace_cow_add(handle, name, num)
++#define trace_cow_inc(handle, name)
++
++#endif
++
++
+ #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))
