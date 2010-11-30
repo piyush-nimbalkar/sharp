@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: linux-2.6.37.1+/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-27 17:20:17.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-27 19:18:06.000000000 +0530
+--- linux-2.6.37.1+.orig/fs/ext4/inode.c	2010-11-30 12:53:08.000000000 +0530
++++ linux-2.6.37.1+/fs/ext4/inode.c	2010-11-30 13:01:37.000000000 +0530
 @@ -663,6 +663,13 @@
  			new_blocks[index++] = current_block++;
  			count--;
@@ -129,7 +129,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	return err;
  }
  
-@@ -1093,9 +1153,15 @@
+@@ -1093,15 +1153,22 @@
  	/*
  	 * Block out ext4_truncate while we alter the tree
  	 */
@@ -141,28 +141,39 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	err = ext4_alloc_branch(handle, inode, map->m_lblk, indirect_blks,
  				&count, goal,
  				offsets + (partial - chain), partial);
+-
 +#endif
- 	if (err)
- 		goto out_mutex;
- 
-@@ -1146,8 +1212,13 @@
++        if (err)
++            goto out_mutex;
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+ 	if (*(partial->p)) {
+-      int ret;
++            int ret;
+ #ifdef WARNING_NOT_IMPLEMENTED
+-      /* old block is being replaced with a new block */
++            /* old block is being replaced with a new block */
+        if (buffer_partial_write(bh_result) &&
+         !buffer_uptodate(bh_result)) {
+        /* read old block data before moving it to snapshot */
+@@ -1142,8 +1209,14 @@
  	 * may need to return -EAGAIN upwards in the worst case.  --sct
  	 */
  	if (!err)
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
 +		err = ext4_splice_branch_cow(handle, inode, map->m_lblk, partial,
-+					      indirect_blks, count, flags);
++				      indirect_blks, count, flags);
 +#else
  		err = ext4_splice_branch(handle, inode, map->m_lblk,
  					 partial, indirect_blks, count);
 +#endif
-  out_mutex:
++ out_mutex:
  	if (err)
  		goto cleanup;
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+ 
+Index: linux-2.6.37.1+/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-27 18:16:20.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-27 18:17:07.000000000 +0530
+--- linux-2.6.37.1+.orig/fs/ext4/Kconfig	2010-11-30 12:53:09.000000000 +0530
++++ linux-2.6.37.1+/fs/ext4/Kconfig	2010-11-30 12:53:26.000000000 +0530
 @@ -204,3 +204,13 @@
  	help
  	  Implementation of copying blocks into a snapshot file.
@@ -177,10 +188,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  The move block command maps an allocated blocks to the snapshot file,
 +	  allocating only the indirect blocks when needed.
 +	  This mechanism is used to move-on-write data blocks to snapshot.
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
+Index: linux-2.6.37.1+/fs/ext4/snapshot.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-27 18:16:20.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-27 18:17:07.000000000 +0530
+--- linux-2.6.37.1+.orig/fs/ext4/snapshot.c	2010-11-30 12:53:09.000000000 +0530
++++ linux-2.6.37.1+/fs/ext4/snapshot.c	2010-11-30 12:53:26.000000000 +0530
 @@ -12,6 +12,9 @@
   * Ext4 snapshots core functions.
   */
@@ -301,10 +312,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +}
 +
 +#endif
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: linux-2.6.37.1+/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-27 18:16:20.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-27 18:17:07.000000000 +0530
+--- linux-2.6.37.1+.orig/fs/ext4/snapshot.h	2010-11-30 12:53:09.000000000 +0530
++++ linux-2.6.37.1+/fs/ext4/snapshot.h	2010-11-30 12:53:26.000000000 +0530
 @@ -166,7 +166,21 @@
  #define ext4_snapshot_cow(handle, inode, bh, cow) 0
  #endif
