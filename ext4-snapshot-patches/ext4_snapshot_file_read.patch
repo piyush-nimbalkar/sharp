@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 19:15:41.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 20:05:23.000000000 +0530
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:32:54.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:56:51.000000000 +0530
 @@ -963,6 +963,23 @@
  	int depth;
  	int count = 0;
@@ -26,7 +26,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  
  	J_ASSERT(!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)));
  	J_ASSERT(handle != NULL || (flags & EXT4_GET_BLOCKS_CREATE) == 0);
-@@ -1012,6 +1029,26 @@
+@@ -1012,6 +1029,28 @@
  		goto got_it;
  	}
  
@@ -41,8 +41,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +		if (ext4_snapshot_is_active(inode)) {
 +			/* active snapshot - read though holes to block
 +			 * device */
-+          //			clear_buffer_new(bh_result);
-+          //	map_bh(bh_result, inode->i_sb, SNAPSHOT_BLOCK(map->m_lblk));
++#ifdef WARNING_NOT_IMPLEMENTED
++			clear_buffer_new(bh_result);
++			map_bh(bh_result, inode->i_sb, SNAPSHOT_BLOCK(map->m_lblk));
++#endif
 +			err = 1;
 +			goto cleanup;
 +		} else
@@ -53,10 +55,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	/* Next simple case - plain lookup or failed read of indirect block */
  	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0 || err == -EIO)
  		goto cleanup;
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 19:15:41.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 19:52:59.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:32:54.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:52:58.000000000 +0530
 @@ -136,3 +136,12 @@
  	  Ext4 snapshot implementation as a file inside the file system.
  	  Snapshot files are marked with the snapfile flag and have special
@@ -70,10 +72,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  On active snapshot file page read, the function ext4_get_block()
 +	  is called to map the page to a disk block.  If the page is not mapped
 +	  in the snapshot file a direct mapping to the block device is returned.
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
+Index: backup/fs/ext4/snapshot.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-26 13:46:22.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-26 19:52:59.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/snapshot.c	2010-12-02 11:52:58.000000000 +0530
 @@ -15,4 +15,53 @@
  #include "snapshot.h"
  
@@ -128,10 +130,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +}
 +#endif
  
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-26 19:15:41.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 19:52:59.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:32:54.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:52:58.000000000 +0530
 @@ -216,6 +216,13 @@
  }
  

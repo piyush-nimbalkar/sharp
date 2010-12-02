@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 10:07:01.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 10:15:44.000000000 +0530
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:07:15.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:32:45.000000000 +0530
 @@ -974,6 +974,26 @@
  
  	partial = ext4_get_branch(inode, depth, offsets, chain, &err);
@@ -29,51 +29,51 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	/* Simplest case - block found, no allocation needed */
  	if (!partial) {
  		first_block = le32_to_cpu(chain[depth - 1].key);
-@@ -1019,6 +1039,43 @@
- 	if (err)
- 		goto out_mutex;
+@@ -1017,6 +1037,43 @@
+ 				&count, goal,
+ 				offsets + (partial - chain), partial);
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 +	if (*(partial->p)) {
-+      int ret;
++		int ret;
 +#ifdef WARNING_NOT_IMPLEMENTED
-+      /* old block is being replaced with a new block */
-+       if (buffer_partial_write(bh_result) &&
-+        !buffer_uptodate(bh_result)) {
-+       /* read old block data before moving it to snapshot */
-+      map_bh(bh_result, inode->i_sb,
-+           le32_to_cpu(*(partial->p)));
-+      ll_rw_block(READ, 1, &bh_result);
-+      wait_on_buffer(bh_result);
-+        /* clear old block mapping */
-+        clear_buffer_mapped(bh_result); //JAMNARE
-+      if (!buffer_uptodate(bh_result)) { //JAMNARE
-+        err = -EIO;
-+        goto out_mutex;
-+       }
-+      }
-+       if (buffer_partial_write(bh_result))
-+        /* prevent zero out of page in block_write_begin() */
-+       /SetPageUptodate(bh_result->b_page);
-+		/* move old block to snapshot */
++		/* old block is being replaced with a new block */
++		if (buffer_partial_write(bh_result) &&
++			!buffer_uptodate(bh_result)) {
++			/* read old block data before moving it to snapshot */
++			map_bh(bh_result, inode->i_sb,
++			le32_to_cpu(*(partial->p)));
++			ll_rw_block(READ, 1, &bh_result);
++			wait_on_buffer(bh_result);
++			/* clear old block mapping */
++			clear_buffer_mapped(bh_result);
++			if (!buffer_uptodate(bh_result)) {
++				err = -EIO;
++				goto out_mutex;
++			}
++	      }
++		if (buffer_partial_write(bh_result))
++			/* prevent zero out of page in block_write_begin() */
++			SetPageUptodate(bh_result->b_page);
 +#endif
-+      ret = ext4_snapshot_get_move_access(handle, inode,
-+                                          le32_to_cpu(*(partial->p)), 1);
-+      if (ret < 1) {
-+        /* failed to move to snapshot - free new block */
-+        ext4_free_blocks(handle, inode,partial->bh,
-+                         le32_to_cpu(partial->key), 1,flags);
-+        err = ret ? : -EIO;
-+        goto out_mutex;
-+      }
-+      /* block moved to snapshot - continue to splice new block */
-+      err = 0;
++		/* move old block to snapshot */
++		ret = ext4_snapshot_get_move_access(handle, inode,
++				le32_to_cpu(*(partial->p)), 1);
++		if (ret < 1) {
++			/* failed to move to snapshot - free new block */
++			ext4_free_blocks(handle, inode, partial->bh,
++				le32_to_cpu(partial->key), 1, flags);
++			err = ret ? : -EIO;
++			goto out_mutex;
++		}
++		/* block moved to snapshot - continue to splice new block */
++		err = 0;
 +	}
 +#endif
  	/*
  	 * The ext4_splice_branch call will free and forget any buffers
  	 * on the new chain if there is a failure, but that risks using
-@@ -1596,6 +1653,9 @@
+@@ -1593,6 +1650,9 @@
  			    loff_t pos, unsigned len, unsigned flags,
  			    struct page **pagep, void **fsdata)
  {
@@ -83,7 +83,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	struct inode *inode = mapping->host;
  	int ret, needed_blocks;
  	handle_t *handle;
-@@ -1632,6 +1691,35 @@
+@@ -1629,6 +1689,36 @@
  		goto out;
  	}
  	*pagep = page;
@@ -106,10 +106,11 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +		else
 +			clear_buffer_partial_write(bh);
 +		/*
-+		 * make sure that get_block() is called even if the buffer is mapped,
-+		 * but not if it is already a part of any transaction. in data=ordered,
-+		 * the only mode supported by ext4, all dirty data buffers are flushed
-+		 * on snapshot take via freeze_fs() API.
++		 * make sure that get_block() is called even if the buffer is
++		 * mapped, but not if it is already a part of any transaction.
++		 * in data=ordered,the only mode supported by ext4, all dirty
++		 * data buffers are flushed on snapshot take via freeze_fs()
++		 * API.
 +		 */
 +		if (buffer_mapped(bh) && !buffer_jbd(bh))
 +			clear_buffer_mapped(bh);
@@ -119,7 +120,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  
  	if (ext4_should_dioread_nolock(inode))
  		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
-@@ -1642,6 +1730,14 @@
+@@ -1639,6 +1729,14 @@
  		ret = walk_page_buffers(handle, page_buffers(page),
  				from, to, NULL, do_journal_get_write_access);
  	}
@@ -134,7 +135,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  
  	if (ret) {
  		unlock_page(page);
-@@ -4242,6 +4338,20 @@
+@@ -4239,6 +4337,20 @@
  			goto unlock;
  	}
  
@@ -155,10 +156,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	if (ext4_should_journal_data(inode)) {
  		BUFFER_TRACE(bh, "get write access");
  		err = ext4_journal_get_write_access(handle, bh);
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 10:11:53.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 10:13:48.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:16:58.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:17:10.000000000 +0530
 @@ -117,3 +117,13 @@
  	  Before deleting file blocks in ext4_free_blocks(),
  	  we call the snapshot API snapshot_get_delete_access(),
@@ -173,10 +174,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  the function ext4_get_block() is called to map the buffer to disk.
 +	  We use this hook to call the snapshot API snapshot_get_move_access(),
 +	  to optionally move the block to the snapshot file.
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 10:11:53.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 10:34:20.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:16:58.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:31:02.000000000 +0530
 @@ -97,6 +97,13 @@
  #define SNAPSHOT_SET_DISABLED(inode)		\
  	i_size_write((inode), 0)
@@ -236,8 +237,8 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 +static inline int ext4_snapshot_should_move_data(struct inode *inode)
 +{
 +	/* when a data block is journaled, it is already COWed as metadata */
-+    if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
-+      return 0;
++	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
++		return 0;
 +	if (ext4_should_journal_data(inode))
 +		return 0;
 +	return 1;

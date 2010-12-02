@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 09:26:01.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 10:07:01.000000000 +0530
+--- backup.orig/fs/ext4/inode.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:07:15.000000000 +0530
 @@ -857,7 +857,12 @@
  	 */
  	if (where->bh) {
@@ -15,7 +15,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  		if (err)
  			goto err_out;
  	}
-@@ -4398,7 +4403,11 @@
+@@ -4395,7 +4400,11 @@
  					    blocks_for_truncate(inode));
  		if (bh) {
  			BUFFER_TRACE(bh, "retaking write access");
@@ -27,7 +27,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  		}
  	}
  
-@@ -4444,7 +4453,12 @@
+@@ -4441,7 +4450,12 @@
  
  	if (this_bh) {				/* For indirect block */
  		BUFFER_TRACE(this_bh, "get_write_access");
@@ -40,7 +40,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  		/* Important: if we can't update the indirect pointers
  		 * to the blocks, we can't free them. */
  		if (err)
-@@ -4602,8 +4616,13 @@
+@@ -4599,8 +4613,13 @@
  				 * pointed to by an indirect block: journal it
  				 */
  				BUFFER_TRACE(parent_bh, "get_write_access");
@@ -54,10 +54,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  					*p = 0;
  					BUFFER_TRACE(parent_bh,
  					"call ext4_handle_dirty_metadata");
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 10:05:04.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 10:07:01.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:05:44.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:07:15.000000000 +0530
 @@ -98,3 +98,13 @@
  
  	  If you select Y here, then you will be able to turn on debugging
@@ -72,10 +72,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  namely, one of the ext4_journal_get_XXX_access() functions.
 +	  We use these journal hooks to call the snapshot API,
 +	  before every meta data buffer write.
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 10:05:04.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 10:07:01.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:05:44.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:07:15.000000000 +0530
 @@ -107,6 +107,58 @@
   * Block access functions
   */
@@ -135,10 +135,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
  
  /*
   * Snapshot constructor/destructor
-Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
+Index: backup/fs/ext4/ext4_jbd2.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.c	2010-11-29 09:26:01.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c	2010-11-29 10:07:01.000000000 +0530
+--- backup.orig/fs/ext4/ext4_jbd2.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/ext4_jbd2.c	2010-12-02 11:16:07.000000000 +0530
 @@ -17,6 +17,10 @@
  
  	if (ext4_handle_valid(handle)) {
@@ -150,13 +150,14 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
  		if (err)
  			ext4_journal_abort_handle(where, line, __func__, bh,
  						  handle, err);
-@@ -24,13 +28,23 @@
+@@ -24,13 +28,24 @@
  	return err;
  }
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
-+int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,handle_t *handle,
-+                    struct inode *inode, struct buffer_head *bh)
++int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,
++					 handle_t *handle, struct inode *inode,
++					 struct buffer_head *bh)
 +#else
 +
  int __ext4_journal_get_write_access(const char *where, unsigned int line,
@@ -174,7 +175,7 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
  		if (err)
  			ext4_journal_abort_handle(where, line, __func__, bh,
  						  handle, err);
-@@ -112,6 +126,10 @@
+@@ -112,6 +127,10 @@
  
  	if (ext4_handle_valid(handle)) {
  		err = jbd2_journal_get_create_access(handle, bh);
@@ -185,10 +186,10 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.c
  		if (err)
  			ext4_journal_abort_handle(where, line, __func__,
  						  bh, handle, err);
-Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
+Index: backup/fs/ext4/ext4_jbd2.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-29 10:05:04.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-29 10:11:32.000000000 +0530
+--- backup.orig/fs/ext4/ext4_jbd2.h	2010-12-02 11:05:44.000000000 +0530
++++ backup/fs/ext4/ext4_jbd2.h	2010-12-02 11:15:36.000000000 +0530
 @@ -104,6 +104,7 @@
  #define EXT4_QUOTA_INIT_BLOCKS(sb) 0
  #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
@@ -197,13 +198,14 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
  #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
  #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
  #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))
-@@ -133,9 +134,16 @@
+@@ -133,9 +134,17 @@
  int __ext4_journal_get_undo_access(const char *where, unsigned int line,
  				   handle_t *handle, struct buffer_head *bh);
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
-+int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,handle_t *handle,
-+				struct inode *inode, struct buffer_head *bh);
++int __ext4_journal_get_write_access_inode(const char *where, unsigned int line,
++					 handle_t *handle, struct inode *inode,
++					 struct buffer_head *bh);
 +#else
 +
  int __ext4_journal_get_write_access(const char *where, unsigned int line,
@@ -214,17 +216,18 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
  int __ext4_forget(const char *where, unsigned int line, handle_t *handle,
  		  int is_metadata, struct inode *inode,
  		  struct buffer_head *bh, ext4_fsblk_t blocknr);
-@@ -152,8 +160,17 @@
+@@ -152,8 +161,18 @@
  
  #define ext4_journal_get_undo_access(handle, bh) \
  	__ext4_journal_get_undo_access(__func__, __LINE__, (handle), (bh))
 +
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
 +#define ext4_journal_get_write_access(handle, bh) \
-+  __ext4_journal_get_write_access_inode(__func__,__LINE__, (handle), NULL, (bh))
++	__ext4_journal_get_write_access_inode(__func__, __LINE__, \
++						 (handle), NULL, (bh))
 +#define ext4_journal_get_write_access_inode(handle, inode, bh) \
-+  __ext4_journal_get_write_access_inode(__func__,__LINE__, (handle), (inode), \
-+					       (bh))
++	__ext4_journal_get_write_access_inode(__func__, __LINE__, \
++						(handle), (inode), (bh))
 +#else
  #define ext4_journal_get_write_access(handle, bh) \
  	__ext4_journal_get_write_access(__func__, __LINE__, (handle), (bh))

@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/file.c
+Index: backup/fs/ext4/file.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/file.c	2010-11-26 13:46:22.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/file.c	2010-11-26 20:11:06.000000000 +0530
+--- backup.orig/fs/ext4/file.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/file.c	2010-12-02 11:57:50.000000000 +0530
 @@ -111,6 +111,15 @@
  	struct path path;
  	char buf[64], *cp;
@@ -18,20 +18,11 @@ Index: linux-2.6.37.1.x/fs/ext4/file.c
  	if (unlikely(!(sbi->s_mount_flags & EXT4_MF_MNTDIR_SAMPLED) &&
  		     !(sb->s_flags & MS_RDONLY))) {
  		sbi->s_mount_flags |= EXT4_MF_MNTDIR_SAMPLED;
-@@ -189,7 +198,7 @@
- 	.open		= ext4_file_open,
- 	.release	= ext4_release_file,
- 	.fsync		= ext4_sync_file,
--	.splice_read	= generic_file_splice_read,
-+	.splice_read= generic_file_splice_read,
- 	.splice_write	= generic_file_splice_write,
- };
- 
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-26 20:05:23.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-26 20:07:43.000000000 +0530
-@@ -4888,6 +4888,15 @@
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:56:51.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:57:13.000000000 +0530
+@@ -4887,6 +4887,15 @@
  	ext4_lblk_t last_block;
  	unsigned blocksize = inode->i_sb->s_blocksize;
  
@@ -47,10 +38,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	if (!ext4_can_truncate(inode))
  		return;
  
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 19:52:59.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 20:07:43.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:52:58.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:57:13.000000000 +0530
 @@ -145,3 +145,11 @@
  	  On active snapshot file page read, the function ext4_get_block()
  	  is called to map the page to a disk block.  If the page is not mapped
@@ -63,10 +54,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	help
 +	  Enforce snapshot file permissions.
 +	  Write, truncate and unlink of snapshot inodes is not allowed.
-Index: linux-2.6.37.1.x/fs/ext4/namei.c
+Index: backup/fs/ext4/namei.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/namei.c	2010-11-26 13:46:22.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/namei.c	2010-11-26 20:07:43.000000000 +0530
+--- backup.orig/fs/ext4/namei.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/namei.c	2010-12-02 11:57:13.000000000 +0530
 @@ -2197,6 +2197,16 @@
  			     inode->i_ino, inode->i_nlink);
  		inode->i_nlink = 1;

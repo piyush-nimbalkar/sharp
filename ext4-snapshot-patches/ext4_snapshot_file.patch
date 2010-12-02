@@ -1,8 +1,8 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 14:47:14.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 14:49:48.000000000 +0530
-@@ -3839,6 +3839,15 @@
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:32:45.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:32:54.000000000 +0530
+@@ -3837,6 +3837,15 @@
  	size_t count = iov_length(iov, nr_segs);
  	int retries = 0;
  
@@ -18,7 +18,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	if (rw == WRITE) {
  		loff_t final_size = offset + count;
  
-@@ -4254,9 +4263,44 @@
+@@ -4252,9 +4261,44 @@
  	.is_partially_uptodate  = block_is_partially_uptodate,
  	.error_remove_page	= generic_error_remove_page,
  };
@@ -63,10 +63,10 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	if (ext4_should_order_data(inode) &&
  		test_opt(inode->i_sb, DELALLOC))
  		inode->i_mapping->a_ops = &ext4_da_aops;
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 14:47:14.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 14:49:48.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:17:10.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:32:54.000000000 +0530
 @@ -127,3 +127,12 @@
  	  the function ext4_get_block() is called to map the buffer to disk.
  	  We use this hook to call the snapshot API snapshot_get_move_access(),
@@ -80,10 +80,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  Ext4 snapshot implementation as a file inside the file system.
 +	  Snapshot files are marked with the snapfile flag and have special
 +	  read-only address space ops.
-Index: linux-2.6.37.1.x/fs/ext4/ext4.h
+Index: backup/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-29 13:32:13.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-29 14:52:13.000000000 +0530
+--- backup.orig/fs/ext4/ext4.h	2010-12-02 11:16:58.000000000 +0530
++++ backup/fs/ext4/ext4.h	2010-12-02 11:52:41.000000000 +0530
 @@ -12,7 +12,7 @@
   *
   *  Copyright (C) 1991, 1992  Linus Torvalds
@@ -199,26 +199,24 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
 +#define EXT4_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
 +#endif
  
- #define EXT4_SET_FLAGS(sb,mask) \
- 	EXT4_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
-@@ -1063,12 +1133,10 @@
- 	__u8	s_reserved_char_pad;
+ /*
+  * Mount flags
+@@ -1059,11 +1129,9 @@
  	__le16  s_reserved_pad;
  	__le64	s_kbytes_written;	/* nr of lifetime kilobytes written */
--	__le32	s_snapshot_inum;	/* Inode number of active snapshot */
+ 	__le32	s_snapshot_inum;	/* Inode number of active snapshot */
 -	__le32	s_snapshot_id;		/* sequential ID of active snapshot */
 -	__le64	s_snapshot_r_blocks_count; /* reserved blocks for active
 -					      snapshot's future use */
 -	__le32	s_snapshot_list;	/* inode number of the head of the
 -					   on-disk snapshot list */
-+    __le32	s_snapshot_inum;	/* Inode number of active snapshot */
 +	__le32	s_snapshot_id;		/* Sequential ID of active snapshot */
 +	__le64	s_snapshot_r_blocks_count; /* Reserved for active snapshot */
 +	__le32	s_snapshot_list;	/* start of list of snapshot inodes */
  #define EXT4_S_ERR_START offsetof(struct ext4_super_block, s_error_count)
  	__le32	s_error_count;		/* number of fs errors */
  	__le32	s_first_error_time;	/* first time an error happened */
-@@ -1152,6 +1220,11 @@
+@@ -1147,6 +1215,11 @@
  	u32 s_max_batch_time;
  	u32 s_min_batch_time;
  	struct block_device *journal_bdev;
@@ -230,7 +228,7 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  #ifdef CONFIG_JBD2_DEBUG
  	struct timer_list turn_ro_timer;	/* For turning read-only (crash simulation) */
  	wait_queue_head_t ro_wait_queue;	/* For people waiting for the fs to go read-only */
-@@ -1294,6 +1367,9 @@
+@@ -1289,6 +1362,9 @@
  #endif
  
  #define NEXT_ORPHAN(inode) EXT4_I(inode)->i_dtime
@@ -240,7 +238,7 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  
  /*
   * Codes for operating systems
-@@ -1344,6 +1420,9 @@
+@@ -1339,6 +1415,9 @@
  #define EXT4_FEATURE_COMPAT_EXT_ATTR		0x0008
  #define EXT4_FEATURE_COMPAT_RESIZE_INODE	0x0010
  #define EXT4_FEATURE_COMPAT_DIR_INDEX		0x0020
@@ -250,16 +248,15 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  
  #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
  #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
-@@ -1375,14 +1454,20 @@
+@@ -1370,14 +1449,20 @@
  					 EXT4_FEATURE_INCOMPAT_EXTENTS| \
  					 EXT4_FEATURE_INCOMPAT_64BIT| \
  					 EXT4_FEATURE_INCOMPAT_FLEX_BG)
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
  #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
  					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
--					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
-+                     EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
-+				     EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
++					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
+ 					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
  					 EXT4_FEATURE_RO_COMPAT_DIR_NLINK | \
  					 EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE | \
  					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR |\
@@ -273,7 +270,7 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  /*
   * Default values for user and/or group using reserved blocks
   */
-@@ -1980,6 +2065,19 @@
+@@ -1975,6 +2060,19 @@
  	void            *bb_bitmap;
  #endif
  	struct rw_semaphore alloc_sem;
@@ -293,10 +290,10 @@ Index: linux-2.6.37.1.x/fs/ext4/ext4.h
  	ext4_grpblk_t	bb_counters[];	/* Nr of free power-of-two-block
  					 * regions, index is order.
  					 * bb_counters[3] = 5 means
-Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
+Index: backup/fs/ext4/snapshot_ctl.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot_ctl.c	2010-11-29 13:30:22.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-11-29 14:49:48.000000000 +0530
+--- backup.orig/fs/ext4/snapshot_ctl.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/snapshot_ctl.c	2010-12-02 11:32:54.000000000 +0530
 @@ -14,6 +14,81 @@
  
  #include "snapshot.h"
@@ -541,10 +538,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
  {
  }
 +#endif
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-29 14:47:14.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-29 14:49:48.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:31:02.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:32:54.000000000 +0530
 @@ -251,8 +251,50 @@
  
  /* super.c */
@@ -605,8 +602,8 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 +		return 0;
 +#endif
  	/* when a data block is journaled, it is already COWed as metadata */
-     if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
-       return 0;
+ 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+ 		return 0;
 @@ -269,6 +315,27 @@
  }
  #endif
@@ -635,11 +632,11 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
  
  
  
-Index: linux-2.6.37.1.x/fs/ext4/super.c
+Index: backup/fs/ext4/super.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/super.c	2010-11-29 13:31:56.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/super.c	2010-11-29 14:49:48.000000000 +0530
-@@ -772,6 +772,12 @@
+--- backup.orig/fs/ext4/super.c	2010-12-02 11:03:00.000000000 +0530
++++ backup/fs/ext4/super.c	2010-12-02 11:49:01.000000000 +0530
+@@ -771,6 +771,12 @@
  		vfree(sbi->s_flex_groups);
  	else
  		kfree(sbi->s_flex_groups);
@@ -652,7 +649,7 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	percpu_counter_destroy(&sbi->s_freeblocks_counter);
  	percpu_counter_destroy(&sbi->s_freeinodes_counter);
  	percpu_counter_destroy(&sbi->s_dirs_counter);
-@@ -3087,6 +3093,10 @@
+@@ -3086,6 +3092,10 @@
  	const char *descr;
  	int ret = -ENOMEM;
  	int blocksize;
@@ -679,7 +676,7 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
 +			memset(sbi->s_group_info, 0, size);
 +	}
 +	if (sbi->s_group_info == NULL) {
-+		printk (KERN_ERR "EXT4-fs: not enough memory for "
++		printk(KERN_ERR "EXT4-fs: not enough memory for "
 +				"%lu max groups\n", max_groups);
 +		goto failed_mount2;
 +	}
@@ -699,7 +696,7 @@ Index: linux-2.6.37.1.x/fs/ext4/super.c
  	needs_recovery = (es->s_last_orphan != 0 ||
  			  EXT4_HAS_INCOMPAT_FEATURE(sb,
  				    EXT4_FEATURE_INCOMPAT_RECOVER));
-@@ -3766,6 +3798,14 @@
+@@ -3769,6 +3801,14 @@
  	percpu_counter_destroy(&sbi->s_dirs_counter);
  	percpu_counter_destroy(&sbi->s_dirtyblocks_counter);
  failed_mount2:

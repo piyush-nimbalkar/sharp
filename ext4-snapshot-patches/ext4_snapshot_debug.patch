@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 13:56:31.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 13:57:02.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:05:44.000000000 +0530
 @@ -75,6 +75,14 @@
  	  If you are not using a security module that requires using
  	  extended attributes for file security labels, say N.
@@ -17,19 +17,19 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
  config EXT4_FS_SNAPSHOT
  	bool "snapshot support"
  	depends on EXT4_FS
-Index: linux-2.6.37.1.x/fs/ext4/Makefile
+Index: backup/fs/ext4/Makefile
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Makefile	2010-11-26 13:56:31.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Makefile	2010-11-26 13:57:02.000000000 +0530
-@@ -20,3 +20,4 @@
+--- backup.orig/fs/ext4/Makefile	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/Makefile	2010-12-02 11:05:44.000000000 +0530
+@@ -13,3 +13,4 @@
  ext4-$(CONFIG_EXT4_FS_XATTR)		+= xattr.o xattr_user.o xattr_trusted.o
  ext4-$(CONFIG_EXT4_FS_POSIX_ACL)	+= acl.o
  ext4-$(CONFIG_EXT4_FS_SECURITY)		+= xattr_security.o
 +ext4-$(CONFIG_EXT4_FS_DEBUG)	 += snapshot_debug.o
-Index: linux-2.6.37.1.x/fs/ext4/snapshot_debug.c
+Index: backup/fs/ext4/snapshot_debug.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.37.1.x/fs/ext4/snapshot_debug.c	2010-11-26 14:23:25.000000000 +0530
++++ backup/fs/ext4/snapshot_debug.c	2010-12-02 11:06:48.000000000 +0530
 @@ -0,0 +1,106 @@
 +/*
 + * linux/fs/ext4/snapshot_debug.c
@@ -95,7 +95,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_debug.c
 +/*
 + * ext4_snapshot_create_debugfs_entry - register ext4 debug hooks
 + * Void function doesn't return error if debug hooks are not registered.
-+ */ 
++ */
 +void ext4_snapshot_create_debugfs_entry(void)
 +{
 +	int i;
@@ -137,10 +137,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_debug.c
 +}
 +
 +
-Index: linux-2.6.37.1.x/fs/ext4/snapshot_debug.h
+Index: backup/fs/ext4/snapshot_debug.h
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ linux-2.6.37.1.x/fs/ext4/snapshot_debug.h	2010-11-26 14:24:40.000000000 +0530
++++ backup/fs/ext4/snapshot_debug.h	2010-12-02 11:05:44.000000000 +0530
 @@ -0,0 +1,105 @@
 +/*
 + * linux/fs/ext4/snapshot_debug.h
@@ -247,10 +247,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_debug.h
 +#define SNAP_DUMP	5 /* dump snapshot file */
 +
 +#endif	/* _LINUX_EXT4_SNAPSHOT_DEBUG_H */
-Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-26 13:56:31.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 13:57:02.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:05:10.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:05:44.000000000 +0530
 @@ -18,6 +18,7 @@
  #include <linux/version.h>
  #include <linux/delay.h>
@@ -273,10 +273,10 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
  }
  
  
-Index: linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h
+Index: backup/fs/ext4/ext4_jbd2.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4_jbd2.h	2010-11-26 13:56:31.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4_jbd2.h	2010-11-26 13:57:02.000000000 +0530
+--- backup.orig/fs/ext4/ext4_jbd2.h	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/ext4_jbd2.h	2010-12-02 11:05:44.000000000 +0530
 @@ -21,6 +21,7 @@
  #include <linux/fs.h>
  #include <linux/jbd2.h>

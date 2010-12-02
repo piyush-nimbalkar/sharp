@@ -1,8 +1,8 @@
-Index: linux-2.6.37.1.x/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/inode.c	2010-11-29 10:52:35.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/inode.c	2010-11-29 11:12:38.000000000 +0530
-@@ -5325,6 +5325,31 @@
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:57:13.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 12:01:15.000000000 +0530
+@@ -5326,6 +5326,31 @@
  	 */
  	for (block = 0; block < EXT4_N_BLOCKS; block++)
  		ei->i_data[block] = raw_inode->i_block[block];
@@ -34,7 +34,7 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
  	INIT_LIST_HEAD(&ei->i_orphan);
  
  	/*
-@@ -5596,6 +5621,18 @@
+@@ -5597,6 +5622,17 @@
  			cpu_to_le32(inode->i_version >> 32);
  		raw_inode->i_extra_isize = cpu_to_le16(ei->i_extra_isize);
  	}
@@ -42,21 +42,20 @@ Index: linux-2.6.37.1.x/fs/ext4/inode.c
 +	if (ext4_snapshot_file(inode)) {
 +		raw_inode->i_disk_version =
 +			cpu_to_le32(ei->i_next_snapshot_ino);
-+      		/* dynamic snapshot flags are not stored on-disk */
++		/* dynamic snapshot flags are not stored on-disk */
 +		raw_inode->i_flags &= cpu_to_le32(~EXT4_FL_SNAPSHOT_DYN_MASK);
-+	}
-+    else
-+          raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
++	} else
++		raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
 +#else
-+    raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
++	raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
 +#endif
  
  	BUFFER_TRACE(bh, "call ext4_handle_dirty_metadata");
  	rc = ext4_handle_dirty_metadata(handle, NULL, bh);
-Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-29 10:52:35.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-29 10:52:54.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:57:13.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:58:10.000000000 +0530
 @@ -153,3 +153,12 @@
  	help
  	  Enforce snapshot file permissions.
@@ -70,10 +69,10 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  Snapshot inode is stored differently in memory and on disk.
 +	  During store and load of snapshot inode, some of the inode flags
 +	  and fields are converted.
-Index: linux-2.6.37.1.x/fs/ext4/ext4.h
+Index: backup/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-29 10:50:02.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-29 10:56:29.000000000 +0530
+--- backup.orig/fs/ext4/ext4.h	2010-12-02 11:52:41.000000000 +0530
++++ backup/fs/ext4/ext4.h	2010-12-02 11:58:10.000000000 +0530
 @@ -680,6 +680,7 @@
  		struct {
  			__le32  l_i_version;
