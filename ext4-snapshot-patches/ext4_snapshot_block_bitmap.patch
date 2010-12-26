@@ -169,11 +169,11 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	if (!desc)
 +		return NULL;
 +
-+	bitmap_blk = ext4_block_bitmap(sb,desc);
++	bitmap_blk = ext4_block_bitmap(sb, desc);
 +
-+	ext4_lock_group(sb,block_group);
++	ext4_lock_group(sb, block_group);
 +	cow_bitmap_blk = gi->bg_cow_bitmap;
-+	ext4_unlock_group(sb,block_group);
++	ext4_unlock_group(sb, block_group);
 +	if (cow_bitmap_blk)
 +		return sb_bread(sb, cow_bitmap_blk);
 +
@@ -235,9 +235,9 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	}
 +
 +	/* update or reset COW bitmap cache */
-+      ext4_lock_group(sb, block_group);
++	ext4_lock_group(sb, block_group);
 +	gi->bg_cow_bitmap = cow_bitmap_blk;
-+    ext4_unlock_group(sb, block_group);
++	ext4_unlock_group(sb, block_group);
 +
 +	return cow_bh;
 +}
@@ -283,8 +283,8 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	 * if the bit is set in the COW bitmap,
 +	 * then the block is in use by snapshot
 +	 */
-+	for (inuse = 0; inuse < maxblocks && bit+inuse < SNAPSHOT_BLOCKS_PER_GROUP;
-+			inuse++) {
++	for (inuse = 0; inuse < maxblocks && bit+inuse <
++			 SNAPSHOT_BLOCKS_PER_GROUP; inuse++) {
 +		if (!ext4_test_bit(bit+inuse, cow_bh->b_data))
 +			break;
 +	}

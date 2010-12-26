@@ -75,7 +75,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	unlock_buffer(sbh);
 +	if (handle) {
 +#ifdef WARNING_NOT_IMPLEMENTED
-+      /*Patch snapshot_block_cow_patch*/
++		/*Patch snapshot_block_cow_patch*/
 +		err = ext4_journal_dirty_data(handle, sbh);
 +		if (err)
 +			goto out;

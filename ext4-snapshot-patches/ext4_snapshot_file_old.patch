@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1+/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/Kconfig	2010-11-30 12:52:58.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/Kconfig	2010-11-30 13:08:29.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 12:01:27.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-26 08:01:50.000000000 +0530
 @@ -175,3 +175,12 @@
  	  To map 2^32 logical blocks, 4 triple indirect blocks are used instead
  	  of just one.  The extra 3 triple indirect blocks are stored in-place
@@ -15,10 +15,10 @@ Index: linux-2.6.37.1+/fs/ext4/Kconfig
 +	  Snapshot flags and super block field positions have changed.
 +	  When old has_snapshot flag is set, copy fields to new position,
 +	  clear old flags and fields and set new flags on mount time.
-Index: linux-2.6.37.1+/fs/ext4/ext4.h
+Index: backup/fs/ext4/ext4.h
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/ext4.h	2010-11-30 12:52:58.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/ext4.h	2010-11-30 13:13:46.000000000 +0530
+--- backup.orig/fs/ext4/ext4.h	2010-12-02 12:01:27.000000000 +0530
++++ backup/fs/ext4/ext4.h	2010-12-26 08:06:50.000000000 +0530
 @@ -452,6 +452,9 @@
  			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
  			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL)
@@ -29,22 +29,22 @@ Index: linux-2.6.37.1+/fs/ext4/ext4.h
  
  /* Flags that are appropriate for regular files (all but dir-specific ones). */
  #define EXT4_REG_FLMASK (~(EXT4_DIRSYNC_FL | EXT4_TOPDIR_FL))
-@@ -992,6 +995,14 @@
+@@ -994,6 +997,14 @@
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
  #define EXT4_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
  #define EXT4_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
 +#define EXT4_FLAGS_FIX_EXCLUDE		0x0040 /* Bad exclude bitmap */
 +#define EXT4_FLAGS_BIG_JOURNAL		0x1000  /* Old big journal */
-+#define EXT4_SET_FLAGS(sb,mask) \
-+    EXT4_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
-+#define EXT4_CLEAR_FLAGS(sb,mask) \
-+    EXT4_SB(sb)->s_es->s_flags &= ~cpu_to_le32(mask)
++#define EXT4_SET_FLAGS(sb, mask) \
++	EXT4_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
++#define EXT4_CLEAR_FLAGS(sb, mask) \
++	EXT4_SB(sb)->s_es->s_flags &= ~cpu_to_le32(mask)
 +#endif
  #endif
  
  /*
-@@ -1163,7 +1174,16 @@
+@@ -1166,7 +1177,16 @@
  	__u8	s_last_error_func[32];	/* function where the error happened */
  #define EXT4_S_ERR_END offsetof(struct ext4_super_block, s_mount_opts)
  	__u8	s_mount_opts[64];
@@ -57,12 +57,12 @@ Index: linux-2.6.37.1+/fs/ext4/ext4.h
 +	__le32	s_snapshot_id_old;	/* Old active snapshot ID */
 +	__le32	s_snapshot_inum_old;	/* Old active snapshot inode */
 +#else
-+  __le32	s_reserved[112];        /* Padding to the end of the bloc */
++	__le32	s_reserved[112];        /* Padding to the end of the bloc */
 +#endif
  };
  
  #define EXT4_S_ERR_LEN (EXT4_S_ERR_END - EXT4_S_ERR_START)
-@@ -1433,6 +1453,10 @@
+@@ -1438,6 +1458,10 @@
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
  #define EXT4_FEATURE_COMPAT_EXCLUDE_INODE	0x0080 /* Has exclude inode */
  #endif
@@ -73,22 +73,22 @@ Index: linux-2.6.37.1+/fs/ext4/ext4.h
  
  #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
  #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
-@@ -1465,9 +1489,14 @@
+@@ -1470,9 +1494,14 @@
  					 EXT4_FEATURE_INCOMPAT_64BIT| \
  					 EXT4_FEATURE_INCOMPAT_FLEX_BG)
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
  #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
  					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
-                      EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
-+					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD| \
-+					 EXT4_FEATURE_RO_COMPAT_IS_SNAPSHOT_OLD| \
-+					 EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD| \
-+					 EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD| \
- 				     EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
+ 					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
++				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD| \
++				EXT4_FEATURE_RO_COMPAT_IS_SNAPSHOT_OLD| \
++				EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD| \
++				EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD| \
+ 					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
  					 EXT4_FEATURE_RO_COMPAT_DIR_NLINK | \
  					 EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE | \
-@@ -1476,6 +1505,12 @@
+@@ -1481,6 +1510,12 @@
  #else
  #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
  					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
@@ -101,7 +101,7 @@ Index: linux-2.6.37.1+/fs/ext4/ext4.h
  					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR)
  #endif
  /*
-@@ -2050,6 +2085,12 @@
+@@ -2055,6 +2090,12 @@
  #else
  #define EXT4_FREEBLOCKS_WATERMARK 0
  #endif
@@ -114,10 +114,10 @@ Index: linux-2.6.37.1+/fs/ext4/ext4.h
  
  static inline void ext4_update_i_disksize(struct inode *inode, loff_t newsize)
  {
-Index: linux-2.6.37.1+/fs/ext4/snapshot_ctl.c
+Index: backup/fs/ext4/snapshot_ctl.c
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/snapshot_ctl.c	2010-11-30 12:52:56.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/snapshot_ctl.c	2010-11-30 13:08:25.000000000 +0530
+--- backup.orig/fs/ext4/snapshot_ctl.c	2010-12-02 11:32:54.000000000 +0530
++++ backup/fs/ext4/snapshot_ctl.c	2010-12-26 08:01:50.000000000 +0530
 @@ -122,6 +122,53 @@
  	int has_active = 0;
  

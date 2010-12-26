@@ -1,7 +1,7 @@
-Index: linux-2.6.37.1+/fs/ext4/inode.c
+Index: backup/fs/ext4/inode.c
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/inode.c	2010-11-30 12:53:08.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/inode.c	2010-11-30 13:01:37.000000000 +0530
+--- backup.orig/fs/ext4/inode.c	2010-12-26 08:28:04.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-26 08:41:13.000000000 +0530
 @@ -663,6 +663,13 @@
  			new_blocks[index++] = current_block++;
  			count--;
@@ -46,8 +46,8 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
 +		num = 0;
 +		if (indirect_blks > 0) {
 +			/* allocating only indirect blocks */
-+          ext4_alloc_blocks(handle, inode, iblock, goal, indirect_blks,
-+					0, new_blocks, &err);
++			ext4_alloc_blocks(handle, inode, iblock, goal,
++				indirect_blks, 0, new_blocks, &err);
 +			if (err)
 +				return err;
 +		}
@@ -73,7 +73,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
 +		/* don't charge snapshot file owner if move failed */
 +		dquot_free_block(inode, num);
 +	else if (num > 0)
-+      ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
++		ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
 +#else
  	ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
 -
@@ -119,8 +119,8 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
 +		/* don't charge snapshot file owner if move failed */
 +		dquot_free_block(inode, blks);
 +	else
-+      ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
-+                       blks, 0);
++		ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
++					blks, 0);
 +#else
  	ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
  			 blks, 0);
@@ -129,7 +129,7 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	return err;
  }
  
-@@ -1093,15 +1153,22 @@
+@@ -1095,10 +1155,17 @@
  	/*
  	 * Block out ext4_truncate while we alter the tree
  	 */
@@ -143,25 +143,18 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  				offsets + (partial - chain), partial);
 -
 +#endif
-+        if (err)
-+            goto out_mutex;
++	if (err)
++		goto out_mutex;
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
  	if (*(partial->p)) {
--      int ret;
-+            int ret;
- #ifdef WARNING_NOT_IMPLEMENTED
--      /* old block is being replaced with a new block */
-+            /* old block is being replaced with a new block */
-        if (buffer_partial_write(bh_result) &&
-         !buffer_uptodate(bh_result)) {
-        /* read old block data before moving it to snapshot */
-@@ -1142,8 +1209,14 @@
+ 		int ret;
+@@ -1144,8 +1211,14 @@
  	 * may need to return -EAGAIN upwards in the worst case.  --sct
  	 */
  	if (!err)
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
-+		err = ext4_splice_branch_cow(handle, inode, map->m_lblk, partial,
-+				      indirect_blks, count, flags);
++		err = ext4_splice_branch_cow(handle, inode, map->m_lblk,
++				       partial, indirect_blks, count, flags);
 +#else
  		err = ext4_splice_branch(handle, inode, map->m_lblk,
  					 partial, indirect_blks, count);
@@ -170,10 +163,10 @@ Index: linux-2.6.37.1+/fs/ext4/inode.c
  	if (err)
  		goto cleanup;
  
-Index: linux-2.6.37.1+/fs/ext4/Kconfig
+Index: backup/fs/ext4/Kconfig
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/Kconfig	2010-11-30 12:53:09.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/Kconfig	2010-11-30 12:53:26.000000000 +0530
+--- backup.orig/fs/ext4/Kconfig	2010-12-26 08:29:38.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-26 08:38:23.000000000 +0530
 @@ -204,3 +204,13 @@
  	help
  	  Implementation of copying blocks into a snapshot file.
@@ -188,10 +181,10 @@ Index: linux-2.6.37.1+/fs/ext4/Kconfig
 +	  The move block command maps an allocated blocks to the snapshot file,
 +	  allocating only the indirect blocks when needed.
 +	  This mechanism is used to move-on-write data blocks to snapshot.
-Index: linux-2.6.37.1+/fs/ext4/snapshot.c
+Index: backup/fs/ext4/snapshot.c
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/snapshot.c	2010-11-30 12:53:09.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/snapshot.c	2010-11-30 12:53:26.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.c	2010-12-26 08:29:38.000000000 +0530
++++ backup/fs/ext4/snapshot.c	2010-12-26 08:38:23.000000000 +0530
 @@ -12,6 +12,9 @@
   * Ext4 snapshots core functions.
   */
@@ -312,10 +305,10 @@ Index: linux-2.6.37.1+/fs/ext4/snapshot.c
 +}
 +
 +#endif
-Index: linux-2.6.37.1+/fs/ext4/snapshot.h
+Index: backup/fs/ext4/snapshot.h
 ===================================================================
---- linux-2.6.37.1+.orig/fs/ext4/snapshot.h	2010-11-30 12:53:09.000000000 +0530
-+++ linux-2.6.37.1+/fs/ext4/snapshot.h	2010-11-30 12:53:26.000000000 +0530
+--- backup.orig/fs/ext4/snapshot.h	2010-12-26 08:29:38.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-26 08:38:23.000000000 +0530
 @@ -166,7 +166,21 @@
  #define ext4_snapshot_cow(handle, inode, bh, cow) 0
  #endif

@@ -178,13 +178,13 @@ Index: linux_dir/fs/ext4/ext4_jbd2.c
  			ext4_journal_abort_handle(where, line, __func__,
  						  bh, handle, err);
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
-+        if (err)
-+          return err;
-+        
-+        if (!IS_COWING(handle)) {
-+          struct journal_head *jh = bh2jh(bh);
-+          jbd_lock_bh_state(bh);
-+          if (jh->b_modified == 1) {
++	if (err)
++		return err;
++
++	if (!IS_COWING(handle)) {
++		struct journal_head *jh = bh2jh(bh);
++		jbd_lock_bh_state(bh);
++		if (jh->b_modified == 1) {
 +			/*
 +			 * buffer_credits was decremented when buffer was
 +			 * modified for the first time in the current
@@ -195,11 +195,11 @@ Index: linux_dir/fs/ext4/ext4_jbd2.c
 +			 */
 +			jh->b_modified = 2;
 +			((ext4_handle_t *)handle)->h_user_credits--;
-+          }
-+          jbd_unlock_bh_state(bh);
-+        }
++		}
++		jbd_unlock_bh_state(bh);
++	}
 +#endif
-+        
++
  	} else {
  		if (inode)
  			mark_buffer_dirty_inode(bh, inode);
@@ -276,7 +276,7 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 +				 EXT4_COW_BITMAP_CREDITS)
 +/* number of credits for snapshot operations counted once per transaction:
 +   write(sb+inode+tind) = 3 */
-+#define EXT4_SNAPSHOT_CREDITS 	(3*EXT4_WRITE_CREDITS)
++#define EXT4_SNAPSHOT_CREDITS (3*EXT4_WRITE_CREDITS)
 +/*
 + * in total, for N COW operations, we may have to journal 17N+3 blocks,
 + * and we also want to reserve 17+3 credits for the last COW operation,
@@ -313,7 +313,7 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 +#define EXT4_BIG_JOURNAL_BLOCKS	(16*EXT4_MIN_JOURNAL_BLOCKS)
 +#else
 + #define EXT4_SNAPSHOT_HAS_TRANS_BLOCKS(handle, n) \
-+ 	(handle->h_buffer_credits >= (n))
++		(handle->h_buffer_credits >= (n))
 +#endif
 +
 +
@@ -348,11 +348,11 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 +		struct super_block *sb, int nblocks);
 +
 +#define ext4_journal_start_sb(sb, nblocks) \
-+	__ext4_journal_start(__func__, 	\
++	__ext4_journal_start(__func__, \
 +			(sb), (nblocks))
 +
 +#define ext4_journal_start(inode, nblocks) \
-+	__ext4_journal_start(__func__, 	\
++	__ext4_journal_start(__func__, \
 +			(inode)->i_sb, (nblocks))
 +
 +#else
@@ -448,11 +448,11 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 +}
 +
 +#define ext4_journal_extend(handle, nblocks) \
-+	__ext4_journal_extend(__func__, 	\
++	__ext4_journal_extend(__func__, \
 +			(ext4_handle_t *)(handle), (nblocks))
 +
 +#define ext4_journal_restart(handle, nblocks) \
-+	__ext4_journal_restart(__func__, 	\
++	__ext4_journal_restart(__func__, \
 +			(ext4_handle_t *)(handle), (nblocks))
 +#else
 +
