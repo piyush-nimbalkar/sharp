@@ -513,6 +513,20 @@ __ext4_snapshot_trace_cow(const char *where, handle_t *handle,
  */
 static inline void ext4_snapshot_cow_begin(handle_t *handle)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+	if (!EXT4_SNAPSHOT_HAS_TRANS_BLOCKS(handle, 1)) {
+		/*
+		 * The test above is based on lower limit heuristics of
+		 * user_credits/buffer_credits, which is not always accurate,
+		 * so it is possible that there is no bug here, just another
+		 * false alarm.
+		 */
+		snapshot_debug_hl(1, "warning: insufficient buffer/user "
+				  "credits (%d/%d) for COW operation?\n",
+				  handle->h_buffer_credits,
+				  ((ext4_handle_t *)handle)->h_user_credits);
+	}
+#endif
 	snapshot_debug_hl(4, "{\n");
 	IS_COWING(handle) = 1;
 }

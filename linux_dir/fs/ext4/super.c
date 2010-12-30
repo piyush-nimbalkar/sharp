@@ -1,3 +1,4 @@
+
 /*
  *  linux/fs/ext4/super.c
  *
@@ -254,9 +255,16 @@ static void ext4_put_nojournal(handle_t *handle)
  * that sync() will call the filesystem's write_super callback if
  * appropriate.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+handle_t *__ext4_journal_start(const char *where,
+		struct super_block *sb, int nblocks)
+{
+	ext4_handle_t *handle;
+#else
 handle_t *ext4_journal_start_sb(struct super_block *sb, int nblocks)
 {
 	const char *where = __func__;
+#endif
 	journal_t *journal;
 
 	if (sb->s_flags & MS_RDONLY)
@@ -272,7 +280,25 @@ handle_t *ext4_journal_start_sb(struct super_block *sb, int nblocks)
 			ext4_abort(sb, "Detected aborted journal");
 			return ERR_PTR(-EROFS);
 		}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+	/* sanity test for standalone module */
+	if (sizeof(ext4_handle_t) != sizeof(handle_t))
+		return ERR_PTR(-EINVAL);
+
+	handle = (ext4_handle_t *)jbd2_journal_start(journal,
+			       EXT4_SNAPSHOT_START_TRANS_BLOCKS(nblocks));
+	if (!IS_ERR(handle)) {
+		if (handle->h_ref == 1) {
+			handle->h_base_credits = nblocks;
+			handle->h_user_credits = nblocks;
+		}
+		ext4_journal_trace(SNAP_WARN, where, handle, nblocks);
+	}
+	return (handle_t *)handle;
+#else
+
 		return jbd2_journal_start(journal, nblocks);
+#endif
 	}
 	return ext4_get_nojournal();
 }
@@ -3985,7 +4011,25 @@ static journal_t *ext4_get_journal(struct super_block *sb,
 		iput(journal_inode);
 		return NULL;
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+	if ((journal_inode->i_size >> EXT4_BLOCK_SIZE_BITS(sb)) <
+			EXT4_MIN_JOURNAL_BLOCKS) {
+		printk(KERN_ERR "EXT4-fs: journal is too small (%lld < %u).\n",
+			journal_inode->i_size >> EXT4_BLOCK_SIZE_BITS(sb),
+			EXT4_MIN_JOURNAL_BLOCKS);
+		iput(journal_inode);
+		return NULL;
+	}
 
+	if ((journal_inode->i_size >> EXT4_BLOCK_SIZE_BITS(sb)) <
+			EXT4_BIG_JOURNAL_BLOCKS)
+		snapshot_debug(1, "warning: journal is not big enough "
+			"(%lld < %u) - this might affect concurrent "
+			"filesystem writers performance!\n",
+			journal_inode->i_size >> EXT4_BLOCK_SIZE_BITS(sb),
+			EXT4_BIG_JOURNAL_BLOCKS);
+
+#endif
 	journal = jbd2_journal_init_inode(journal_inode);
 	if (!journal) {
 		ext4_msg(sb, KERN_ERR, "Could not load journal inode");

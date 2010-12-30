@@ -149,6 +149,27 @@ int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__,
 						  bh, handle, err);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+	if (err)
+		return err;
+	if (!IS_COWING(handle)) {
+		struct journal_head *jh = bh2jh(bh);
+		jbd_lock_bh_state(bh);
+		if (jh->b_modified == 1) {
+			/*
+			 * buffer_credits was decremented when buffer was
+			 * modified for the first time in the current
+			 * transaction, which may have been during a COW
+			 * operation.  We decrement user_credits and mark
+			 * b_modified = 2, on the first time that the buffer
+			 * is modified not during a COW operation (!h_cowing).
+			 */
+			jh->b_modified = 2;
+			((ext4_handle_t *)handle)->h_user_credits--;
+		}
+		jbd_unlock_bh_state(bh);
+	}
+#endif
 	} else {
 		if (inode)
 			mark_buffer_dirty_inode(bh, inode);

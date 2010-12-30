@@ -230,6 +230,17 @@ config EXT4_FS_SNAPSHOT_JOURNAL_ERROR
 	  JBD functions.  Check for snapshot/journal errors in those places.
 
 
+
+config EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+	bool "snapshot journaled - increase transaction credits"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	default y
+	help
+	  Snapshot operations are journaled as part of the running transaction.
+	  The amount of requested credits is multiplied with a factor, to ensure
+	  that enough buffer credits are reserved in the running transaction.
+
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK
