@@ -1,0 +1,63 @@
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-11-26 14:58:34.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-11-26 16:19:31.000000000 +0530
+@@ -108,3 +108,12 @@
+ 	  namely, one of the ext4_journal_get_XXX_access() functions.
+ 	  We use these journal hooks to call the snapshot API,
+ 	  before every meta data buffer write.
++
++config EXT4_FS_SNAPSHOT_HOOKS_DELETE
++	bool "snapshot hooks - delete blocks"
++	depends on EXT4_FS_SNAPSHOT
++	default y
++	help
++	  Before deleting file blocks in ext4_free_blocks(),
++	  we call the snapshot API snapshot_get_delete_access(),
++	  to optionally move the block to the snapshot file.
+Index: linux-2.6.37.1.x/fs/ext4/ext4.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-26 13:46:22.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-26 16:18:22.000000000 +0530
+@@ -1712,6 +1712,7 @@
+ extern void ext4_discard_preallocations(struct inode *);
+ extern int __init ext4_init_mballoc(void);
+ extern void ext4_exit_mballoc(void);
++
+ extern void ext4_free_blocks(handle_t *handle, struct inode *inode,
+ 			     struct buffer_head *bh, ext4_fsblk_t block,
+ 			     unsigned long count, int flags);
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-26 14:58:34.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 16:18:22.000000000 +0530
+@@ -159,6 +159,29 @@
+ }
+ 
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DELETE
++/*
++ * get_delete_access() - move count blocks to snapshot
++ * @handle:	JBD handle
++ * @inode:	owner of blocks
++ * @block:	address of start @block
++ * @count:	no. of blocks to move
++ *
++ * Called from ext4_free_blocks_sb_inode() before deleting blocks with
++ * truncate_mutex held
++ *
++ * Return values:
++ * > 0 - no. of blocks that were moved to snapshot and may not be deleted
++ * = 0 - @block may be deleted
++ * < 0 - error
++ */
++static inline int ext4_snapshot_get_delete_access(handle_t *handle,
++		struct inode *inode, ext4_fsblk_t block, int count)
++{
++	return ext4_snapshot_move(handle, inode, block, count, 1);
++}
++
++#endif
+ 
+ /*
+  * Snapshot constructor/destructor

@@ -1,0 +1,638 @@
+Index: linux_dir/fs/ext4/balloc.c
+===================================================================
+--- linux_dir.orig/fs/ext4/balloc.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/balloc.c	2010-12-30 02:24:24.000000000 +0530
+@@ -9,6 +9,9 @@
+  *  Enhanced block allocation by Stephen Tweedie (sct@redhat.com), 1993
+  *  Big-endian to little-endian byte-swapping/bitmaps by
+  *        David S. Miller (davem@caip.rutgers.edu), 1995
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/time.h>
+@@ -20,6 +23,7 @@
+ #include "ext4.h"
+ #include "ext4_jbd2.h"
+ #include "mballoc.h"
++#include "snapshot.h"
+ 
+ /*
+  * balloc.c contains the blocks allocation and deallocation routines
+Index: linux_dir/fs/ext4/file.c
+===================================================================
+--- linux_dir.orig/fs/ext4/file.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/file.c	2010-12-30 02:24:24.000000000 +0530
+@@ -16,6 +16,8 @@
+  *
+  *  64-bit file support on 64-bit platforms by Jakub Jelinek
+  *	(jj@sunsite.ms.mff.cuni.cz)
++ *
++ *  Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/time.h>
+@@ -28,6 +30,7 @@
+ #include "ext4_jbd2.h"
+ #include "xattr.h"
+ #include "acl.h"
++#include "snapshot.h"
+ 
+ /*
+  * Called when an inode is released. Note that this is different
+Index: linux_dir/fs/ext4/inode.c
+===================================================================
+--- linux_dir.orig/fs/ext4/inode.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/inode.c	2010-12-30 02:24:24.000000000 +0530
+@@ -20,6 +20,9 @@
+  *	(jj@sunsite.ms.mff.cuni.cz)
+  *
+  *  Assorted race fixes, rewrite of ext4_get_block() by Al Viro, 2000
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/module.h>
+@@ -47,6 +50,7 @@
+ #include "ext4_extents.h"
+ 
+ #include <trace/events/ext4.h>
++#include "snapshot.h"
+ 
+ #define MPAGE_DA_EXTENT_TAIL 0x01
+ 
+Index: linux_dir/fs/ext4/ioctl.c
+===================================================================
+--- linux_dir.orig/fs/ext4/ioctl.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/ioctl.c	2010-12-30 02:24:24.000000000 +0530
+@@ -5,6 +5,9 @@
+  * Remy Card (card@masi.ibp.fr)
+  * Laboratoire MASI - Institut Blaise Pascal
+  * Universite Pierre et Marie Curie (Paris VI)
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/fs.h>
+@@ -18,6 +21,7 @@
+ #include <linux/smp_lock.h>
+ #include "ext4_jbd2.h"
+ #include "ext4.h"
++#include "snapshot.h"
+ 
+ static void print_inode_dealloc_info(struct inode *inode)
+ {
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-12-30 02:24:24.000000000 +0530
+@@ -75,6 +75,13 @@
+ 	  If you are not using a security module that requires using
+ 	  extended attributes for file security labels, say N.
+ 
++config EXT4_FS_SNAPSHOT
++	bool "snapshot support"
++	depends on EXT4_FS
++	default y
++	help
++	  If you say N here, then Ext4 will be identical to Ext3.
++
+ config EXT4_DEBUG
+ 	bool "EXT4 debugging support"
+ 	depends on EXT4_FS
+Index: linux_dir/fs/ext4/Makefile
+===================================================================
+--- linux_dir.orig/fs/ext4/Makefile	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/Makefile	2010-12-30 02:24:24.000000000 +0530
+@@ -15,6 +15,8 @@
+ 		ioctl.o namei.o super.o symlink.o hash.o resize.o extents.o \
+ 		ext4_jbd2.o migrate.o mballoc.o block_validity.o move_extent.o
+ 
++ext4-y	+= snapshot.o snapshot_ctl.o
++
+ ext4-$(CONFIG_EXT4_FS_XATTR)		+= xattr.o xattr_user.o xattr_trusted.o
+ ext4-$(CONFIG_EXT4_FS_POSIX_ACL)	+= acl.o
+ ext4-$(CONFIG_EXT4_FS_SECURITY)		+= xattr_security.o
+Index: linux_dir/fs/ext4/namei.c
+===================================================================
+--- linux_dir.orig/fs/ext4/namei.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/namei.c	2010-12-30 02:24:24.000000000 +0530
+@@ -22,6 +22,9 @@
+  *	Christopher Li, 2002
+  *  Hash Tree Directory indexing cleanup
+  *	Theodore Ts'o, 2002
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/fs.h>
+@@ -39,6 +42,7 @@
+ 
+ #include "xattr.h"
+ #include "acl.h"
++#include "snapshot.h"
+ 
+ /*
+  * define how far ahead to read directories while searching them.
+Index: linux_dir/fs/ext4/ext4.h
+===================================================================
+--- linux_dir.orig/fs/ext4/ext4.h	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/ext4.h	2010-12-30 02:24:24.000000000 +0530
+@@ -11,6 +11,9 @@
+  *  linux/include/linux/minix_fs.h
+  *
+  *  Copyright (C) 1991, 1992  Linus Torvalds
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #ifndef _EXT4_H
+@@ -33,6 +36,25 @@
+ #include <linux/compat.h>
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++#ifndef EXT4_SUPER_MAGIC
++#define EXT4_SUPER_MAGIC EXT3_SUPER_MAGIC
++/* if the kernel was not patched, ext4 is compiled as standalone module */
++#define CONFIG_EXT4_FS_STANDALONE
++#endif
++
++#ifdef CONFIG_EXT4_FS_STANDALONE
++/* configuration options for standalone module */
++#define CONFIG_EXT4_DEFAULTS_TO_ORDERED
++#define CONFIG_EXT4_FS_XATTR
++#define CONFIG_EXT4_FS_SECURITY
++#define CONFIG_EXT4_FS_DEBUG
++#endif
++#if defined(CONFIG_EXT4_FS_STANDALONE) && defined(CONFIG_FS_POSIX_ACL)
++#define CONFIG_EXT4_FS_POSIX_ACL
++#endif
++
++#endif
+ /*
+  * The fourth extended filesystem constants/structures
+  */
+@@ -1326,6 +1348,9 @@
+ #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
+ #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
+ #define EXT4_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++#define EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT  0x0080 /* Ext4 has snapshots */
++#endif
+ #define EXT4_FEATURE_RO_COMPAT_HUGE_FILE        0x0008
+ #define EXT4_FEATURE_RO_COMPAT_GDT_CSUM		0x0010
+ #define EXT4_FEATURE_RO_COMPAT_DIR_NLINK	0x0020
+Index: linux_dir/fs/ext4/resize.c
+===================================================================
+--- linux_dir.orig/fs/ext4/resize.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/resize.c	2010-12-30 02:24:24.000000000 +0530
+@@ -6,6 +6,9 @@
+  * Copyright (C) 2001, 2002 Andreas Dilger <adilger@clusterfs.com>
+  *
+  * This could probably be made into a module, because it is not often in use.
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ 
+@@ -15,6 +18,7 @@
+ #include <linux/slab.h>
+ 
+ #include "ext4_jbd2.h"
++#include "snapshot.h"
+ 
+ #define outside(b, first, last)	((b) < (first) || (b) >= (last))
+ #define inside(b, first, last)	((b) >= (first) && (b) < (last))
+Index: linux_dir/fs/ext4/snapshot.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux_dir/fs/ext4/snapshot.c	2010-12-30 02:24:24.000000000 +0530
+@@ -0,0 +1,18 @@
++/*
++ * linux/fs/ext4/snapshot.c
++ *
++ * Written by Amir Goldstein <amir73il@users.sf.net>, 2008
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ *
++ * This file is part of the Linux kernel and is made available under
++ * the terms of the GNU General Public License, version 2, or at your
++ * option, any later version, incorporated herein by reference.
++ *
++ * Ext4 snapshots core functions.
++ */
++
++#include "snapshot.h"
++
++
++
+Index: linux_dir/fs/ext4/snapshot_ctl.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux_dir/fs/ext4/snapshot_ctl.c	2010-12-30 02:24:24.000000000 +0530
+@@ -0,0 +1,37 @@
++/*
++ * linux/fs/ext4/snapshot_ctl.c
++ *
++ * Written by Amir Goldstein <amir73il@users.sf.net>, 2008
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ *
++ * This file is part of the Linux kernel and is made available under
++ * the terms of the GNU General Public License, version 2, or at your
++ * option, any later version, incorporated herein by reference.
++ *
++ * Ext4 snapshots control functions.
++ */
++
++#include "snapshot.h"
++
++
++#define ext4_snapshot_reset_bitmap_cache(sb, init) 0
++
++
++/*
++ * Snapshot constructor/destructor
++ */
++
++/* with no exclude inode, exclude bitmap is reset to 0 */
++#define ext4_snapshot_init_bitmap_cache(sb, create)	\
++		ext4_snapshot_reset_bitmap_cache(sb, 1)
++
++int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
++		int read_only)
++{
++	return 0;
++}
++
++void ext4_snapshot_destroy(struct super_block *sb)
++{
++}
+Index: linux_dir/fs/ext4/snapshot.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ linux_dir/fs/ext4/snapshot.h	2010-12-30 02:24:24.000000000 +0530
+@@ -0,0 +1,149 @@
++/*
++ * linux/fs/ext4/snapshot.h
++ *
++ * Written by Amir Goldstein <amir73il@users.sf.net>, 2008
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ *
++ * This file is part of the Linux kernel and is made available under
++ * the terms of the GNU General Public License, version 2, or at your
++ * option, any later version, incorporated herein by reference.
++ *
++ * Ext4 snapshot extensions.
++ */
++
++#ifndef _LINUX_EXT4_SNAPSHOT_H
++#define _LINUX_EXT4_SNAPSHOT_H
++
++#include <linux/version.h>
++#include <linux/delay.h>
++#include "ext4_jbd2.h"
++
++
++#define EXT4_SNAPSHOT_VERSION "ext4 snapshot v1.0.13-rc3 (1-Nov-2010)"
++
++/*
++ * use signed 64bit for snapshot image addresses
++ * negative addresses are used to reference snapshot meta blocks
++ */
++#define ext4_snapblk_t long long
++
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 34))
++/* one snapshot patch fits all kernel versions */
++#define dquot_file_open generic_file_open
++#define dquot_alloc_block vfs_dq_alloc_block
++#define dquot_free_block vfs_dq_free_block
++#endif
++
++/*
++ * We assert that snapshot must use a file system with block size == page
++ * size (4K) and that the first file system block is block 0.
++ * Snapshot inode direct blocks are reserved for snapshot meta blocks.
++ * Snapshot inode single indirect blocks are not used.
++ * Snapshot image starts at the first double indirect block.
++ * This way, a snapshot image block group can be mapped with 1 double
++ * indirect block + 32 indirect blocks.
++ */
++#define SNAPSHOT_BLOCK_SIZE		PAGE_SIZE
++#define SNAPSHOT_BLOCK_SIZE_BITS	PAGE_SHIFT
++#define	SNAPSHOT_ADDR_PER_BLOCK		(SNAPSHOT_BLOCK_SIZE / sizeof(__u32))
++#define SNAPSHOT_ADDR_PER_BLOCK_BITS	(SNAPSHOT_BLOCK_SIZE_BITS - 2)
++#define SNAPSHOT_DIR_BLOCKS		EXT4_NDIR_BLOCKS
++#define SNAPSHOT_IND_BLOCKS		SNAPSHOT_ADDR_PER_BLOCK
++
++#define SNAPSHOT_BLOCKS_PER_GROUP_BITS	15
++#define SNAPSHOT_BLOCKS_PER_GROUP					\
++	(1<<SNAPSHOT_BLOCKS_PER_GROUP_BITS) /* 32K */
++#define SNAPSHOT_BLOCK_GROUP(block)		\
++	((block)>>SNAPSHOT_BLOCKS_PER_GROUP_BITS)
++#define SNAPSHOT_BLOCK_GROUP_OFFSET(block)	\
++	((block)&(SNAPSHOT_BLOCKS_PER_GROUP-1))
++#define SNAPSHOT_BLOCK_TUPLE(block)		\
++	(ext4_fsblk_t)SNAPSHOT_BLOCK_GROUP_OFFSET(block), \
++	(ext4_fsblk_t)SNAPSHOT_BLOCK_GROUP(block)
++#define SNAPSHOT_IND_PER_BLOCK_GROUP_BITS				\
++	(SNAPSHOT_BLOCKS_PER_GROUP_BITS-SNAPSHOT_ADDR_PER_BLOCK_BITS)
++#define SNAPSHOT_IND_PER_BLOCK_GROUP			\
++	(1<<SNAPSHOT_IND_PER_BLOCK_GROUP_BITS) /* 32 */
++#define SNAPSHOT_DIND_BLOCK_GROUPS_BITS					\
++	(SNAPSHOT_ADDR_PER_BLOCK_BITS-SNAPSHOT_IND_PER_BLOCK_GROUP_BITS)
++#define SNAPSHOT_DIND_BLOCK_GROUPS			\
++	(1<<SNAPSHOT_DIND_BLOCK_GROUPS_BITS) /* 32 */
++
++#define SNAPSHOT_BLOCK_OFFSET				\
++	(SNAPSHOT_DIR_BLOCKS+SNAPSHOT_IND_BLOCKS)
++#define SNAPSHOT_BLOCK(iblock)					\
++	((ext4_snapblk_t)(iblock) - SNAPSHOT_BLOCK_OFFSET)
++#define SNAPSHOT_IBLOCK(block)						\
++	(ext4_fsblk_t)((block) + SNAPSHOT_BLOCK_OFFSET)
++
++#define SNAPSHOT_BYTES_OFFSET					\
++	(SNAPSHOT_BLOCK_OFFSET << SNAPSHOT_BLOCK_SIZE_BITS)
++#define SNAPSHOT_ISIZE(size)			\
++	((size) + SNAPSHOT_BYTES_OFFSET)
++
++#define SNAPSHOT_SET_SIZE(inode, size)				\
++	(EXT4_I(inode)->i_disksize = SNAPSHOT_ISIZE(size))
++#define SNAPSHOT_SIZE(inode)					\
++	(EXT4_I(inode)->i_disksize - SNAPSHOT_BYTES_OFFSET)
++#define SNAPSHOT_SET_BLOCKS(inode, blocks)			\
++	SNAPSHOT_SET_SIZE((inode),				\
++			(loff_t)(blocks) << SNAPSHOT_BLOCK_SIZE_BITS)
++#define SNAPSHOT_BLOCKS(inode)					\
++	(ext4_fsblk_t)(SNAPSHOT_SIZE(inode) >> SNAPSHOT_BLOCK_SIZE_BITS)
++#define SNAPSHOT_SET_ENABLED(inode)				\
++	i_size_write((inode), SNAPSHOT_SIZE(inode))
++#define SNAPSHOT_SET_DISABLED(inode)		\
++	i_size_write((inode), 0)
++
++
++
++#define ext4_snapshot_cow(handle, inode, bh, cow) 0
++
++#define ext4_snapshot_move(handle, inode, block, num, move) (num)
++
++/*
++ * Block access functions
++ */
++
++
++/*
++ * Snapshot constructor/destructor
++ */
++extern int ext4_snapshot_load(struct super_block *sb,
++		struct ext4_super_block *es, int read_only);
++extern int ext4_snapshot_update(struct super_block *sb, int cleanup,
++		int read_only);
++extern void ext4_snapshot_destroy(struct super_block *sb);
++
++static inline int init_ext4_snapshot(void)
++{
++	return 0;
++}
++
++static inline void exit_ext4_snapshot(void)
++{
++}
++
++
++/* balloc.c */
++extern struct buffer_head *read_block_bitmap(struct super_block *sb,
++					     unsigned int block_group);
++
++/* namei.c */
++
++/* inode.c */
++extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
++					   unsigned long ino,
++					   struct ext4_iloc *iloc);
++
++/* super.c */
++
++
++
++
++
++
++
++
++#endif	/* _LINUX_EXT4_SNAPSHOT_H */
+Index: linux_dir/fs/ext4/super.c
+===================================================================
+--- linux_dir.orig/fs/ext4/super.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/super.c	2010-12-30 06:10:26.000000000 +0530
+@@ -14,6 +14,9 @@
+  *
+  *  Big-endian to little-endian byte-swapping/bitmaps by
+  *        David S. Miller (davem@caip.rutgers.edu), 1995
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include <linux/module.h>
+@@ -48,6 +51,7 @@
+ #include "xattr.h"
+ #include "acl.h"
+ #include "mballoc.h"
++#include "snapshot.h"
+ 
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/ext4.h>
+@@ -728,6 +732,11 @@
+ 	destroy_workqueue(sbi->dio_unwritten_wq);
+ 
+ 	lock_super(sb);
++
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++	ext4_snapshot_destroy(sb);
++#endif
++
+ 	if (sb->s_dirt)
+ 		ext4_commit_super(sb, 1);
+ 
+@@ -3041,7 +3050,22 @@
+ 			   ext4_li_info->li_task == NULL);
+ 	}
+ }
+-
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++static char *journal_mode_string(struct super_block *sb)
++{
++	if (!EXT4_SB(sb)->s_journal)
++		return "no-journal";
++	switch (test_opt(sb, DATA_FLAGS)) {
++	case EXT4_MOUNT_JOURNAL_DATA:
++		return "journal";
++	case EXT4_MOUNT_ORDERED_DATA:
++		return "ordered";
++	case EXT4_MOUNT_WRITEBACK_DATA:
++		return "writeback";
++	}
++	return "unknown";
++}
++#endif
+ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
+ 				__releases(kernel_lock)
+ 				__acquires(kernel_lock)
+@@ -3215,8 +3239,14 @@
+ 
+ 	blocksize = BLOCK_SIZE << le32_to_cpu(es->s_log_block_size);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++	/* Block size must be equal to page size */
++	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)
++		 || blocksize != SNAPSHOT_BLOCK_SIZE) {
++#else
+ 	if (blocksize < EXT4_MIN_BLOCK_SIZE ||
+ 	    blocksize > EXT4_MAX_BLOCK_SIZE) {
++#endif
+ 		ext4_msg(sb, KERN_ERR,
+ 		       "Unsupported filesystem blocksize %d", blocksize);
+ 		goto failed_mount;
+@@ -3559,7 +3589,23 @@
+ 		printk(KERN_ERR "EXT4-fs: failed to create DIO workqueue\n");
+ 		goto failed_mount_wq;
+ 	}
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++
++	/* Ext4 unsupported features */
++	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)
++		 && (!EXT4_SB(sb)->s_journal || test_opt(sb, DATA_FLAGS) !=
++		     EXT4_MOUNT_ORDERED_DATA) && (!test_opt(sb, QUOTA))) {
++		printk(KERN_ERR "EXT4-fs: %s mode is not supported\n",
++			journal_mode_string(sb));
++		goto failed_mount3;
++	}
++	if (sbi->s_jquota_fmt) {
++		printk(KERN_ERR "EXT4-fs: journaled quota options are not"
++			" supported.\n");
++		goto failed_mount3;
++	}
+ 
++#endif
+ 	/*
+ 	 * The jbd2_journal_load will have done any necessary log recovery,
+ 	 * so we can safely mount the rest of the filesystem now.
+@@ -3586,6 +3632,13 @@
+ 
+ 	ext4_setup_super(sb, es, sb->s_flags & MS_RDONLY);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++	if (ext4_snapshot_load(sb, es, sb->s_flags & MS_RDONLY))
++		/* XXX: how to fail mount/force read-only at this point? */
++		ext4_error(sb, "load snapshot failed\n");
++#endif
++
++
+ 	/* determine the minimum size of new large inodes, if present */
+ 	if (sbi->s_inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
+ 		sbi->s_want_extra_isize = sizeof(struct ext4_inode) -
+@@ -4874,10 +4927,18 @@
+ 	err = register_filesystem(&ext4_fs_type);
+ 	if (err)
+ 		goto out;
+-
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++	err = init_ext4_snapshot();
++	if (err)
++		goto out_fs;
++#endif
+ 	ext4_li_info = NULL;
+ 	mutex_init(&ext4_li_mtx);
+ 	return 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++out_fs:
++	unregister_filesystem(&ext4_fs_type);
++#endif
+ out:
+ 	unregister_as_ext2();
+ 	unregister_as_ext3();
+@@ -4899,6 +4960,9 @@
+ 
+ static void __exit ext4_exit_fs(void)
+ {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT
++	exit_ext4_snapshot();
++#endif
+ 	ext4_destroy_lazyinit_thread();
+ 	unregister_as_ext2();
+ 	unregister_as_ext3();
+Index: linux_dir/fs/ext4/ext4_jbd2.c
+===================================================================
+--- linux_dir.orig/fs/ext4/ext4_jbd2.c	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/ext4_jbd2.c	2010-12-30 02:24:24.000000000 +0530
+@@ -1,8 +1,12 @@
+ /*
+  * Interface between ext4 and JBD
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #include "ext4_jbd2.h"
++#include "snapshot.h"
+ 
+ #include <trace/events/ext4.h>
+ 
+Index: linux_dir/fs/ext4/ext4_jbd2.h
+===================================================================
+--- linux_dir.orig/fs/ext4/ext4_jbd2.h	2010-12-30 02:24:21.000000000 +0530
++++ linux_dir/fs/ext4/ext4_jbd2.h	2010-12-30 02:24:24.000000000 +0530
+@@ -10,6 +10,9 @@
+  * option, any later version, incorporated herein by reference.
+  *
+  * Ext4-specific journaling extensions.
++ *
++ * Copyright (C) 2008-2010 CTERA Networks
++ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+ #ifndef _EXT4_JBD2_H
+@@ -279,10 +282,12 @@
+ 		return 0;
+ 	if (!S_ISREG(inode->i_mode))
+ 		return 1;
++#ifndef CONFIG_EXT4_FS_SNAPSHOT
+ 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA)
+ 		return 1;
+ 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
+ 		return 1;
++#endif
+ 	return 0;
+ }
+ 
+@@ -292,8 +297,10 @@
+ 		return 0;
+ 	if (!S_ISREG(inode->i_mode))
+ 		return 0;
++#ifndef CONFIG_EXT4_FS_SNAPSHOT
+ 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
+ 		return 0;
++#endif
+ 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_ORDERED_DATA)
+ 		return 1;
+ 	return 0;
+@@ -305,8 +312,10 @@
+ 		return 0;
+ 	if (EXT4_JOURNAL(inode) == NULL)
+ 		return 1;
++#ifndef CONFIG_EXT4_FS_SNAPSHOT
+ 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
+ 		return 0;
++#endif
+ 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_WRITEBACK_DATA)
+ 		return 1;
+ 	return 0;

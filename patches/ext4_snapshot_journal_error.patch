@@ -1,0 +1,362 @@
+Index: linux_dir/fs/ext4/balloc.c
+===================================================================
+--- linux_dir.orig/fs/ext4/balloc.c	2010-12-29 21:39:58.000000000 +0530
++++ linux_dir/fs/ext4/balloc.c	2010-12-29 21:40:17.000000000 +0530
+@@ -472,7 +472,13 @@
+ 
+ 	/* We dirtied the bitmap block */
+ 	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	ret = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
++	if (!err)
++		err = ret;
++#else
+ 	err = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
++#endif
+ 
+ 	/* And the group descriptor block */
+ 	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
+Index: linux_dir/fs/ext4/inode.c
+===================================================================
+--- linux_dir.orig/fs/ext4/inode.c	2010-12-29 21:40:15.000000000 +0530
++++ linux_dir/fs/ext4/inode.c	2010-12-29 21:40:17.000000000 +0530
+@@ -4694,6 +4694,11 @@
+ #else
+ 			ext4_journal_get_write_access(handle, bh);
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++			/* we may have lost write_access on bh */
++			if (is_handle_aborted(handle))
++				return;
++#endif
+ 		}
+ 	}
+ 
+@@ -4766,6 +4771,11 @@
+ 						      block_to_free, count,
+ 						      block_to_free_p, p))
+ 					break;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++				/* we may have lost write_access on this_bh */
++				if (is_handle_aborted(handle))
++					return;
++#endif
+ 				block_to_free = nr;
+ 				block_to_free_p = p;
+ 				count = 1;
+@@ -4776,6 +4786,11 @@
+ 	if (count > 0)
+ 		ext4_clear_blocks(handle, inode, this_bh, block_to_free,
+ 				  count, block_to_free_p, p);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	/* we may have lost write_access on this_bh */
++	if (is_handle_aborted(handle))
++		return;
++#endif
+ 
+ 	if (this_bh) {
+ 		BUFFER_TRACE(this_bh, "call ext4_handle_dirty_metadata");
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-12-29 21:40:16.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-12-29 21:40:17.000000000 +0530
+@@ -205,6 +205,31 @@
+ 	  Implementation of copying blocks into a snapshot file.
+ 	  This mechanism is used to copy-on-write metadata blocks to snapshot.
+ 
++
++config EXT4_FS_SNAPSHOT_JOURNAL
++	bool "snapshot journaled"
++	depends on EXT4_FS_SNAPSHOT_BLOCK
++	default y
++	help
++	  Ext4 snapshot operations are journaled inside the same transaction
++	  with the file system operation that triggered them.
++
++
++config EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	bool "snapshot journaled - record errors in journal"
++	depends on EXT4_FS_SNAPSHOT_JOURNAL
++	default y
++	help
++	  Ext4 error state is recorded in the journal super block and error
++	  messages are recorder in free space after the journal super block.
++	  Ext4 should be mounted with errors=remount-ro.
++	  After a snapshot error, the file system will be in read-only mode.
++	  The administrator must un-mount the file system and run fsck
++	  to prevent data corruption.
++	  Some places in Ext3 original code don't check for return value of
++	  JBD functions.  Check for snapshot/journal errors in those places.
++
++
+ config EXT4_FS_SNAPSHOT_BLOCK_MOVE
+ 	bool "snapshot block operation - move blocks to snapshot"
+ 	depends on EXT4_FS_SNAPSHOT_BLOCK
+Index: linux_dir/fs/ext4/namei.c
+===================================================================
+--- linux_dir.orig/fs/ext4/namei.c	2010-12-29 21:40:10.000000000 +0530
++++ linux_dir/fs/ext4/namei.c	2010-12-29 21:40:17.000000000 +0530
+@@ -1643,8 +1643,17 @@
+ 		if (!ext4_check_dir_entry(dir, de, bh, i))
+ 			return -EIO;
+ 		if (de == de_del)  {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++			int err;
++
++			BUFFER_TRACE(bh, "get_write_access");
++			err = ext4_journal_get_write_access(handle, bh);
++			if (err)
++				return err;
++#else
+ 			BUFFER_TRACE(bh, "get_write_access");
+ 			ext4_journal_get_write_access(handle, bh);
++#endif
+ 			if (pde)
+ 				pde->rec_len = ext4_rec_len_to_disk(
+ 					ext4_rec_len_from_disk(pde->rec_len,
+@@ -1826,7 +1835,20 @@
+ 	if (!dir_block)
+ 		goto out_clear_inode;
+ 	BUFFER_TRACE(dir_block, "get_write_access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	err = ext4_journal_get_write_access(handle, dir_block);
++	if (err) {
++		drop_nlink(inode); /* is this nlink == 0? */
++		unlock_new_inode(inode);
++		/* no need to check for errors - we failed anyway */
++		(void) ext4_mark_inode_dirty(handle, inode);
++		iput(inode);
++		brelse(dir_block);
++		goto out_stop;
++	}
++#else
+ 	ext4_journal_get_write_access(handle, dir_block);
++#endif
+ 	de = (struct ext4_dir_entry_2 *) dir_block->b_data;
+ 	de->inode = cpu_to_le32(inode->i_ino);
+ 	de->name_len = 1;
+@@ -2404,6 +2426,12 @@
+ 		if (!new_inode && new_dir != old_dir &&
+ 		    EXT4_DIR_LINK_MAX(new_dir))
+ 			goto end_rename;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++		BUFFER_TRACE(dir_bh, "get_write_access");
++		retval = ext4_journal_get_write_access(handle, dir_bh);
++		if (retval)
++			goto end_rename;
++#endif
+ 	}
+ 	if (!new_bh) {
+ 		retval = ext4_add_entry(handle, new_dentry, old_inode);
+@@ -2411,7 +2439,13 @@
+ 			goto end_rename;
+ 	} else {
+ 		BUFFER_TRACE(new_bh, "get write access");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++		retval = ext4_journal_get_write_access(handle, new_bh);
++		if (retval)
++			goto end_rename;
++#else
+ 		ext4_journal_get_write_access(handle, new_bh);
++#endif
+ 		new_de->inode = cpu_to_le32(old_inode->i_ino);
+ 		if (EXT4_HAS_INCOMPAT_FEATURE(new_dir->i_sb,
+ 					      EXT4_FEATURE_INCOMPAT_FILETYPE))
+@@ -2468,8 +2502,10 @@
+ 	old_dir->i_ctime = old_dir->i_mtime = ext4_current_time(old_dir);
+ 	ext4_update_dx_flag(old_dir);
+ 	if (dir_bh) {
++#ifndef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+ 		BUFFER_TRACE(dir_bh, "get_write_access");
+ 		ext4_journal_get_write_access(handle, dir_bh);
++#endif
+ 		PARENT_INO(dir_bh->b_data, new_dir->i_sb->s_blocksize) =
+ 						cpu_to_le32(new_dir->i_ino);
+ 		BUFFER_TRACE(dir_bh, "call ext4_handle_dirty_metadata");
+Index: linux_dir/fs/ext4/super.c
+===================================================================
+--- linux_dir.orig/fs/ext4/super.c	2010-12-29 21:40:12.000000000 +0530
++++ linux_dir/fs/ext4/super.c	2010-12-29 21:46:33.000000000 +0530
+@@ -304,10 +304,57 @@
+ 	return err;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++/* record error messages after journal super block */
++static void ext4_record_journal_err(struct super_block *sb, const char*where,
++		const char *function, const char *fmt, va_list args)
++{
++#define MSGLEN 256
++	journal_t *journal = EXT4_SB(sb)->s_journal;
++	char *buf;
++	unsigned long offset;
++	int len;
++	if (!journal)
++		return;
++
++	buf = (char *)journal->j_superblock;
++	offset = (unsigned long)buf % sb->s_blocksize;
++	buf += sizeof(journal_superblock_t);
++	offset += sizeof(journal_superblock_t);
++
++	/* seek to end of message buffer */
++	while (offset < sb->s_blocksize && *buf) {
++		buf += MSGLEN;
++		offset += MSGLEN;
++	}
++
++	if (offset+MSGLEN > sb->s_blocksize)
++		/* no space left in message buffer */
++		return;
++
++	len = snprintf(buf, MSGLEN, "%s: %s: ", where, function);
++	len += vsnprintf(buf+len, MSGLEN-len, fmt, args);
++}
++
++static void ext4_record_journal_errstr(struct super_block *sb,
++		const char *where, const char *function, ...)
++{
++	va_list args;
++
++	va_start(args, function);
++	ext4_record_journal_err(sb, where, function, "%s\n", args);
++	va_end(args);
++}
++
++#endif
++
+ void ext4_journal_abort_handle(const char *caller, unsigned int line,
+ 			       const char *err_fn, struct buffer_head *bh,
+ 			       handle_t *handle, int err)
+ {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	struct super_block *sb = handle->h_transaction->t_journal->j_private;
++#endif
+ 	char nbuf[16];
+ 	const char *errstr = ext4_decode_error(NULL, err, nbuf);
+ 
+@@ -323,6 +370,12 @@
+ 	printk(KERN_ERR "%s:%d: aborting transaction: %s in %s\n",
+ 		caller, line, errstr, err_fn);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	/* record error message in journal super block */
++	ext4_record_journal_errstr(sb, caller, err_fn, errstr);
++
++#endif
++
+ 	jbd2_journal_abort_handle(handle);
+ }
+ 
+@@ -407,6 +460,9 @@
+ 	       sb->s_id, function, line, current->comm);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	ext4_record_journal_err(sb, __func__, function, fmt, args);
++#endif
+ 	va_end(args);
+ 
+ 	ext4_handle_error(sb);
+@@ -470,6 +526,9 @@
+ 				     char nbuf[16])
+ {
+ 	char *errstr = NULL;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	handle_t *handle = journal_current_handle();
++#endif
+ 
+ 	switch (errno) {
+ 	case -EIO:
+@@ -484,6 +543,13 @@
+ 			errstr = "Journal has aborted";
+ 		else
+ 			errstr = "Readonly filesystem";
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++		if (!handle || handle->h_err != -ENOSPC)
++			break;
++		/* fall through */
++	case -ENOSPC:
++		errstr = "Snapshot out of disk space";
++#endif
+ 		break;
+ 	default:
+ 		/* If the caller passed in an extra buffer for unknown
+@@ -521,6 +587,11 @@
+ 	       sb->s_id, function, line, errstr);
+ 	save_error_info(sb, function, line);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	/* record error message in journal super block */
++	ext4_record_journal_errstr(sb, __func__, function, errstr);
++
++#endif
+ 	ext4_handle_error(sb);
+ }
+ 
+@@ -545,6 +616,10 @@
+ 	       function, line);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++	/* record error message in journal super block */
++	ext4_record_journal_err(sb, __func__, function, fmt, args);
++#endif
+ 	va_end(args);
+ 
+ 	if ((sb->s_flags & MS_RDONLY) == 0) {
+@@ -568,6 +643,14 @@
+ 	printk("%sEXT4-fs (%s): ", prefix, sb->s_id);
+ 	vprintk(fmt, args);
+ 	printk("\n");
++
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++#warning "function" parameter not declared
++#ifdef WARNING_NOT_IMPLEMENTED
++	/* record error message in journal super block */
++	ext4_record_journal_err(sb, __func__, function, fmt, args);
++#endif
++#endif
+ 	va_end(args);
+ }
+ 
+@@ -4219,12 +4302,38 @@
+ 	j_errno = jbd2_journal_errno(journal);
+ 	if (j_errno) {
+ 		char nbuf[16];
+-
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++		char *buf1, *buf2;
++		unsigned long offset1, offset2;
++		int len1, len2;
++
++		/* copy message buffer from journal to super block */
++		buf1 = (char *)journal->j_superblock;
++		offset1 = (unsigned long)buf1 % sb->s_blocksize;
++		buf1 += sizeof(journal_superblock_t);
++		offset1 += sizeof(journal_superblock_t);
++		len1 = sb->s_blocksize - offset1;
++		buf2 = (char *)EXT4_SB(sb)->s_es;
++		offset2 = (unsigned long)buf2 % sb->s_blocksize;
++		buf2 += sizeof(struct ext4_super_block);
++		offset2 += sizeof(struct ext4_super_block);
++		len2 = sb->s_blocksize - offset2;
++		if (len2 > len1)
++			len2 = len1;
++		if (len2 > 0 && *buf1)
++			memcpy(buf2, buf1, len2);
++#endif
+ 		errstr = ext4_decode_error(sb, j_errno, nbuf);
+ 		ext4_warning(sb, "Filesystem error recorded "
+ 			     "from previous mount: %s", errstr);
+ 		ext4_warning(sb, "Marking fs in need of filesystem check.");
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
++		/* clear journal message buffer */
++		if (len1 > 0)
++			memset(buf1, 0, len1);
++
++#endif
+ 		EXT4_SB(sb)->s_mount_state |= EXT4_ERROR_FS;
+ 		es->s_state |= cpu_to_le16(EXT4_ERROR_FS);
+ 		ext4_commit_super(sb, 1);

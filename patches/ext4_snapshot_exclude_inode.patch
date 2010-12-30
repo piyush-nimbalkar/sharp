@@ -1,0 +1,544 @@
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:11.000000000 +0200
+@@ -3544,6 +3544,30 @@ struct inode *ext4_iget(struct super_bl
+ 		SNAPSHOT_SET_DISABLED(inode);
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (ext4_snapshot_exclude_inode(inode)) {
++		if (ei->i_data[EXT4_IND_BLOCK] != 0) {
++			/* cannot link DIND branch to IND branch */
++			brelse(bh);
++			ret = -EIO;
++			goto bad_inode;
++		}
++		/*
++		 * Link the DIND branch to the IND branch, so we can read
++		 * exclude bitmap block addresses with ext4_bread().
++		 *
++		 * My reasons to justify this hack are:
++		 * 1. I like shortcuts and it helped keeping my patch small
++		 * 2. No user has access to the exclude inode
++		 * 3. The exclude inode is never truncated on a mounted ext4
++		 * 4. The 'expose' is only to the in-memory inode (fsck safe)
++		 * 5. A healthy exclude inode has blocks only on the DIND branch
++		 * XXX: is that a problem?
++		 */
++		ei->i_data[EXT4_IND_BLOCK] = ei->i_data[EXT4_DIND_BLOCK];
++	}
++
++#endif
+ #endif
+ 	INIT_LIST_HEAD(&ei->i_orphan);
+ 
+@@ -3786,6 +3810,23 @@ static int ext4_do_update_inode(handle_
+ 		raw_inode->i_flags &= cpu_to_le32(~EXT4_FL_SNAPSHOT_DYN_MASK);
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (ext4_snapshot_exclude_inode(inode)) {
++		if (raw_inode->i_block[EXT4_IND_BLOCK] !=
++				raw_inode->i_block[EXT4_DIND_BLOCK]) {
++			err = -EIO;
++			goto out_brelse;
++		}
++		/*
++		 * Remove duplicate reference to exclude inode indirect blocks
++		 * which was exposed in ext4_iget() before storing to disk.
++		 * It was needed only in memory and we don't want to break
++		 * compatibility with ext2's disk format.
++		 */
++		raw_inode->i_block[EXT4_IND_BLOCK] = 0;
++	}
++
++#endif
+ #endif
+ 	BUFFER_TRACE(bh, "call ext4_journal_dirty_metadata");
+ 	rc = ext4_journal_dirty_metadata(handle, bh);
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:11.000000000 +0200
+@@ -456,3 +456,14 @@ config EXT4_FS_SNAPSHOT_EXCLUDE
+ 	  allocated inside the snapshot image (no snapshots of snapshot files).
+ 	  Excluding snapshot file blocks is essential for efficient cleanup
+ 	  of deleted snapshot files.
++
++config EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	bool "snapshot exclude - the exclude inode"
++	depends on EXT4_FS_SNAPSHOT_EXCLUDE
++	default y
++	help
++	  The exclude inode owns all the exclude bitmap blocks.
++	  The exclude inode is pre-allocated by 'tune2fs -O exclude_inode'.
++	  The location of exclude bitmap blocks is read on mount time and cached
++	  in the group descriptors.  The exclude inode is extended upon online
++	  and offline resize operations when block groups are added.
+diff -Nuarp a/fs/ext4/ext4.h b/fs/ext4/ext4.h
+--- a/fs/ext4/ext4.h	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/ext4.h	2010-11-11 10:47:12.000000000 +0200
+@@ -81,6 +81,9 @@
+ #define EXT4_UNDEL_DIR_INO	 6	/* Undelete directory inode */
+ #define EXT4_RESIZE_INO		 7	/* Reserved group descriptors inode */
+ #define EXT4_JOURNAL_INO	 8	/* Journal inode */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++#define EXT4_EXCLUDE_INO		 9	/* Snapshot exclude inode */
++#endif
+ 
+ /* First non-reserved inode for old ext4 filesystems */
+ #define EXT4_GOOD_OLD_FIRST_INO	11
+@@ -703,6 +706,9 @@ static inline int ext4_valid_inum(struc
+ 	return ino == EXT4_ROOT_INO ||
+ 		ino == EXT4_JOURNAL_INO ||
+ 		ino == EXT4_RESIZE_INO ||
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++		ino == EXT4_EXCLUDE_INO ||
++#endif
+ 		(ino >= EXT4_FIRST_INO(sb) &&
+ 		 ino <= le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count));
+ }
+diff -Nuarp a/fs/ext4/resize.c b/fs/ext4/resize.c
+--- a/fs/ext4/resize.c	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/resize.c	2010-11-11 10:47:12.000000000 +0200
+@@ -47,6 +47,26 @@ static int verify_group_input(struct sup
+ 	input->free_blocks_count = free_blocks_count =
+ 		input->blocks_count - 2 - overhead - sbi->s_itb_per_group;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (EXT4_HAS_COMPAT_FEATURE(sb,
++		EXT4_FEATURE_COMPAT_EXCLUDE_INODE)) {
++		/* reserve first free block for exclude bitmap */
++		itend++;
++		free_blocks_count--;
++		input->free_blocks_count = free_blocks_count;
++	}
++#ifdef CONFIG_EXT4_FS_DEBUG
++	if (active_snapshot &&
++			EXT4_I(active_snapshot)->i_flags & EXT4_UNRM_FL) {
++		/* assign all new blocks to active snapshot */
++		input->blocks_count -= free_blocks_count;
++		end -= free_blocks_count;
++		input->free_blocks_count = free_blocks_count = 0;
++		input->reserved_blocks = 0;
++	}
++#endif
++
++#endif
+ 	if (test_opt(sb, DEBUG))
+ 		printk(KERN_DEBUG "EXT4-fs: adding %s group %u: %u blocks "
+ 		       "(%d free, %u reserved)\n",
+@@ -292,6 +312,13 @@ static int setup_new_group_blocks(struct
+ 		   input->inode_bitmap - start);
+ 	ext4_set_bit(input->inode_bitmap - start, bh->b_data);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (EXT4_HAS_COMPAT_FEATURE(sb,
++		EXT4_FEATURE_COMPAT_EXCLUDE_INODE))
++		/* clear reserved exclude bitmap block */
++		itend++;
++
++#endif
+ 	/* Zero out all of the inode table blocks */
+ 	for (block = input->inode_table, bit = block - start;
+ 	     block < itend; bit++, block++) {
+@@ -798,6 +825,15 @@ int ext4_group_add(struct super_block *
+ 	ext4_fsblk_t o_blocks_count = le32_to_cpu(es->s_blocks_count);
+ 	ext4_fsblk_t n_blocks_count = o_blocks_count + input->blocks_count;
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	struct ext4_group_info *gi = EXT4_SB(sb)->s_group_info + input->group;
++	struct inode *exclude_inode = NULL;
++	struct buffer_head *exclude_bh = NULL;
++	int dind_offset = input->group / SNAPSHOT_ADDR_PER_BLOCK;
++	int ind_offset = input->group % SNAPSHOT_ADDR_PER_BLOCK;
++	__le32 exclude_bitmap = 0;
++	int credits;
++#endif
+ 	handle_t *handle;
+ 	int gdb_off, gdb_num;
+ 	int err, err2;
+@@ -840,6 +876,30 @@ int ext4_group_add(struct super_block *
+ 		}
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (EXT4_HAS_COMPAT_FEATURE(sb,
++		EXT4_FEATURE_COMPAT_EXCLUDE_INODE)) {
++		exclude_inode = ext4_iget(sb, EXT4_EXCLUDE_INO);
++		if (IS_ERR(exclude_inode)) {
++			ext4_warning(sb, __func__,
++				     "Error opening exclude inode");
++			return PTR_ERR(exclude_inode);
++		}
++
++		/* exclude bitmap blocks addresses are exposed on the IND
++		   branch */
++		exclude_bh = ext4_bread(NULL, exclude_inode,
++					 EXT4_IND_BLOCK+dind_offset, 0, &err);
++		if (!exclude_bh) {
++			snapshot_debug(1, "failed to read exclude inode "
++				       "indirect[%d] block\n", dind_offset);
++			err = -EIO;
++			goto exit_put;
++		}
++		exclude_bitmap = ((__le32 *)exclude_bh->b_data)[ind_offset];
++	}
++
++#endif
+ 	if ((err = verify_group_input(sb, input)))
+ 		goto exit_put;
+ 
+@@ -853,9 +913,21 @@ int ext4_group_add(struct super_block *
+ 	 * are adding a group with superblock/GDT backups  we will also
+ 	 * modify each of the reserved GDT dindirect blocks.
+ 	 */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	credits = ext4_bg_has_super(sb, input->group) ?
++		3 + reserved_gdb : 4;
++	if (exclude_inode && !exclude_bitmap)
++		/*
++		 * we will also be modifying the exclude inode
++		 * and one of it's indirect blocks
++		 */
++		credits += 2;
++	handle = ext4_journal_start_sb(sb, credits);
++#else
+ 	handle = ext4_journal_start_sb(sb,
+ 				       ext4_bg_has_super(sb, input->group) ?
+ 				       3 + reserved_gdb : 4);
++#endif
+ 	if (IS_ERR(handle)) {
+ 		err = PTR_ERR(handle);
+ 		goto exit_put;
+@@ -917,6 +989,53 @@ int ext4_group_add(struct super_block *
+ 	gdp->bg_free_blocks_count = cpu_to_le16(input->free_blocks_count);
+ 	gdp->bg_free_inodes_count = cpu_to_le16(EXT4_INODES_PER_GROUP(sb));
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (!exclude_inode)
++		goto no_exclude_inode;
++	if (exclude_bitmap) {
++		/*
++		 * offline resize from a bigger size filesystem may leave
++		 * allocated exclude bitmap blocks of unused block groups
++		 */
++		snapshot_debug(2, "reusing old exclude bitmap #%d block (%u)\n",
++			       input->group, le32_to_cpu(exclude_bitmap));
++	} else {
++		/* set exclude bitmap block to first free block */
++		ext4_fsblk_t first_free =
++			input->inode_table + sbi->s_itb_per_group;
++		struct ext4_iloc iloc;
++		loff_t i_size;
++
++		err = ext4_journal_get_write_access(handle, exclude_bh);
++		if (err)
++			goto exit_journal;
++		err = ext4_reserve_inode_write(handle, exclude_inode, &iloc);
++		if (err)
++			goto exit_journal;
++
++		exclude_bitmap = cpu_to_le32(first_free);
++		((__le32 *)exclude_bh->b_data)[ind_offset] = exclude_bitmap; 
++		snapshot_debug(2, "allocated new exclude bitmap #%d block "
++			       "("E3FSBLK")\n", input->group, first_free);
++		ext4_journal_dirty_metadata(handle, exclude_bh);
++
++		/*
++		 * Update exclude inode size and blocks.
++		 * Online resize can only extend f/s and exclude inode.
++		 * Offline resize can shrink f/s but it doesn't shrink
++		 * exclude inode.
++		 */
++		i_size = SNAPSHOT_IBLOCK(input->group)
++				 << SNAPSHOT_BLOCK_SIZE_BITS;
++		i_size_write(exclude_inode, i_size);
++		EXT4_I(exclude_inode)->i_disksize = i_size;
++		exclude_inode->i_blocks += sb->s_blocksize >> 9;
++		ext4_mark_iloc_dirty(handle, exclude_inode, &iloc);
++	}
++	/* update exclude bitmap cache */
++	gi->bg_exclude_bitmap = le32_to_cpu(exclude_bitmap);
++no_exclude_inode:
++#endif
+ 	/*
+ 	 * Make the new blocks and inodes valid next.  We do this before
+ 	 * increasing the group count so that once the group is enabled,
+@@ -982,6 +1101,10 @@ exit_journal:
+ 			       primary->b_size);
+ 	}
+ exit_put:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	brelse(exclude_bh);
++	iput(exclude_inode);
++#endif
+ 	iput(inode);
+ #ifdef CONFIG_EXT4_FS_DEBUG
+ 	if (!err && active_snapshot &&
+diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
+--- a/fs/ext4/snapshot.c	2010-11-11 10:47:13.000000000 +0200
++++ b/fs/ext4/snapshot.c	2010-11-11 10:47:12.000000000 +0200
+@@ -834,6 +834,13 @@ int ext4_snapshot_test_and_cow(const ch
+ 
+ 	ext4_snapshot_trace_cow(where, handle, sb, inode, bh, block, cow);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	if (inode && ext4_snapshot_exclude_inode(inode)) {
++		snapshot_debug_hl(4, "exclude bitmap update - "
++				  "skip block cow!\n");
++		return 0;
++	}
++#endif
+ 	if (IS_COWING(handle)) {
+ 		/* avoid recursion on active snapshot updates */
+ 		WARN_ON(inode && inode != active_snapshot);
+diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
+--- a/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:13.000000000 +0200
++++ b/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:12.000000000 +0200
+@@ -1235,9 +1235,218 @@ out_err:
+  * Snapshot constructor/destructor
+  */
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++/*
++ * ext4_exclude_inode_bread - read indirect block from exclude inode
++ * @handle:	JBD handle (NULL is !@create)
++ * @inode:	exclude inode
++ * @grp:	block group
++ * @create:	if true, try to allocate missing indirect block
++ *
++ * Helper function for ext4_snapshot_init_bitmap_cache().
++ * Called under sb_lock and before snapshots are loaded, so changes made to
++ * exclude inode are not COWed.
++ *
++ * Returns indirect block buffer or NULL if not allocated.
++ */
++static struct buffer_head *ext4_exclude_inode_bread(handle_t *handle,
++		struct inode *inode, int grp, int create)
++{
++	int dind_offset = grp / SNAPSHOT_ADDR_PER_BLOCK;
++	struct buffer_head *ind_bh;
++	int err;
++
++	/* exclude bitmap blocks addresses are exposed on the IND branch */
++	ind_bh = ext4_bread(NULL, inode, EXT4_IND_BLOCK + dind_offset,
++						 0, &err);
++	if (ind_bh)
++		return ind_bh;
++
++	snapshot_debug(1, "failed to read exclude inode indirect[%d] block\n",
++			dind_offset);
++	if (!create)
++		return NULL;
++
++	err = extend_or_restart_transaction(handle, EXT4_RESERVE_TRANS_BLOCKS);
++	if (err)
++		return NULL;
++	ind_bh = ext4_bread(handle, inode, EXT4_IND_BLOCK + dind_offset,
++			create, &err);
++	if (!ind_bh) {
++		snapshot_debug(1, "failed to allocate exclude "
++				"inode indirect[%d] block\n",
++				dind_offset);
++		return NULL;
++	}
++	snapshot_debug(2, "allocated exclude bitmap "
++			"indirect[%d] block (%lld)\n",
++			dind_offset, (long long)ind_bh->b_blocknr);
++	return ind_bh;
++}
++
++/*
++ * ext4_exclude_inode_getblk - read address of exclude bitmap block
++ * @handle:	JBD handle (NULL is !@create)
++ * @inode:	exclude inode
++ * @grp:	block group
++ * @create:	if true, try to allocate missing blocks
++  *
++ * Helper function for ext4_snapshot_init_bitmap_cache().
++ * Called under sb_lock and before snapshots are loaded, so changes made to
++ * exclude inode are not COWed.
++ *
++ * Returns exclude bitmap block address (little endian) or 0 if not allocated.
++ */
++static __le32 ext4_exclude_inode_getblk(handle_t *handle,
++		struct inode *inode, int grp, int create)
++{
++	int ind_offset = grp % SNAPSHOT_ADDR_PER_BLOCK;
++	struct buffer_head *bh, *ind_bh = NULL;
++	__le32 exclude_bitmap = 0;
++	int err = 0;
++
++	/* read exclude inode indirect block */
++	ind_bh = ext4_exclude_inode_bread(handle, inode, grp, create);
++	if (!ind_bh)
++		return 0;
++
++	if (grp >= EXT4_SB(inode->i_sb)->s_groups_count)
++		/* past last block group - just allocating indirect blocks */
++		goto out;
++
++	exclude_bitmap = ((__le32 *)ind_bh->b_data)[ind_offset];
++	if (exclude_bitmap)
++		goto out;
++	if (!create)
++		goto alloc_out;
++
++	/* try to allocate missing exclude bitmap(+ind+dind) block */
++	err = extend_or_restart_transaction(handle,
++			EXT4_RESERVE_TRANS_BLOCKS);
++	if (err)
++		goto alloc_out;
++
++	/* exclude bitmap blocks are mapped on the DIND branch */
++	bh = ext4_getblk(handle, inode, SNAPSHOT_IBLOCK(grp), create, &err);
++	if (!bh)
++		goto alloc_out;
++	brelse(bh);
++	exclude_bitmap = ((__le32 *)ind_bh->b_data)[ind_offset];
++alloc_out:
++	if (exclude_bitmap)
++		snapshot_debug(2, "allocated exclude bitmap #%d block "
++				"(%u)\n", grp,
++				le32_to_cpu(exclude_bitmap));
++	else
++		snapshot_debug(1, "failed to allocate exclude "
++				"bitmap #%d block (err = %d)\n",
++				grp, err);
++out:
++	brelse(ind_bh);
++	return exclude_bitmap;
++}
++
++/*
++ * ext4_snapshot_init_bitmap_cache():
++ *
++ * Init the COW/exclude bitmap cache for all block groups.
++ * COW bitmap cache is set to 0 (lazy init on first access to block group).
++ * Read exclude bitmap blocks addresses from exclude inode and store them
++ * in block group descriptor.  If @create is true, Try to allocate missing
++ * exclude bitmap blocks.
++ *
++ * Called from snapshot_load() under sb_lock during mount time.
++ * Returns 0 on success and <0 on error.
++ */
++static int ext4_snapshot_init_bitmap_cache(struct super_block *sb, int create)
++{
++	struct ext4_group_info *gi = EXT4_SB(sb)->s_group_info;
++	struct ext4_sb_info *sbi = EXT4_SB(sb);
++	handle_t *handle = NULL;
++	struct inode *inode;
++	__le32 exclude_bitmap = 0;
++	int grp, max_groups = sbi->s_groups_count;
++	int err = 0, ret;
++	loff_t i_size;
++
++	/* reset COW/exclude bitmap cache */
++	err = ext4_snapshot_reset_bitmap_cache(sb, 1);
++	if (err)
++		return err;
++
++	if (!EXT4_HAS_COMPAT_FEATURE(sb,
++				      EXT4_FEATURE_COMPAT_EXCLUDE_INODE)) {
++		/* exclude inode is a recommended feature - don't force it */
++		snapshot_debug(1, "warning: exclude_inode feature not set - "
++			       "snapshot merge might not free all unused "
++			       "blocks!\n");
++		return 0;
++	}
++
++	inode = ext4_iget(sb, EXT4_EXCLUDE_INO);
++	if (IS_ERR(inode)) {
++		snapshot_debug(1, "warning: bad exclude inode - "
++				"no exclude bitmap!\n");
++		return PTR_ERR(inode);
++	}
++
++	if (create) {
++		/* start large transaction that will be extended/restarted */
++		handle = ext4_journal_start(inode, EXT4_MAX_TRANS_DATA);
++		if (IS_ERR(handle))
++			return PTR_ERR(handle);
++		/* number of groups the filesystem can grow to */
++		max_groups = sbi->s_gdb_count +
++			le16_to_cpu(sbi->s_es->s_reserved_gdt_blocks);
++		max_groups *= EXT4_DESC_PER_BLOCK(sb);
++	}
++
++	/*
++	 * Init exclude bitmap blocks for all existing block groups and
++	 * allocate indirect blocks for all reserved block groups.
++	 */
++	err = -EIO;
++	for (grp = 0; grp < max_groups; grp++, gi++) {
++		exclude_bitmap = ext4_exclude_inode_getblk(handle, inode, grp,
++				create);
++		if (create && grp >= sbi->s_groups_count)
++			/* only allocating indirect blocks with getblk above */
++			continue;
++
++		if (create && !exclude_bitmap)
++			goto out;
++
++		gi->bg_exclude_bitmap = le32_to_cpu(exclude_bitmap);
++		snapshot_debug(2, "update exclude bitmap #%d cache "
++			       "(block=%lu)\n", grp,
++			       gi->bg_exclude_bitmap);
++	}
++
++	err = 0;
++	if (!create)
++		goto out;
++
++	i_size = SNAPSHOT_IBLOCK(max_groups) << SNAPSHOT_BLOCK_SIZE_BITS;
++	if (EXT4_I(inode)->i_disksize >= i_size)
++		goto out;
++	i_size_write(inode, i_size);
++	EXT4_I(inode)->i_disksize = i_size;
++	err = ext4_mark_inode_dirty(handle, inode);
++out:
++	if (handle) {
++		ret = ext4_journal_stop(handle);
++		if (!err)
++			err = ret;
++	}
++	iput(inode);
++	return err;
++}
++
++#else
+ /* with no exclude inode, exclude bitmap is reset to 0 */
+ #define ext4_snapshot_init_bitmap_cache(sb, create)	\
+ 		ext4_snapshot_reset_bitmap_cache(sb, 1)
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+ /*
+diff -Nuarp a/fs/ext4/snapshot.h b/fs/ext4/snapshot.h
+--- a/fs/ext4/snapshot.h	2010-11-11 10:47:13.000000000 +0200
++++ b/fs/ext4/snapshot.h	2010-11-11 10:47:12.000000000 +0200
+@@ -397,6 +397,12 @@ static inline int ext4_snapshot_list(st
+ }
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++static inline int ext4_snapshot_exclude_inode(struct inode *inode)
++{
++	return (inode->i_ino == EXT4_EXCLUDE_INO);
++}
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+ /*
+@@ -421,6 +427,11 @@ static inline int ext4_snapshot_exclude
+ 	/* snapshot files are 'ignored' */
+ 	if (ext4_snapshot_file(inode))
+ 		return -1;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
++	/* exclude inode is 'ignored' */
++	if (ext4_snapshot_exclude_inode(inode))
++		return -1;
++#endif
+ 	return 0;
+ }
+ #endif

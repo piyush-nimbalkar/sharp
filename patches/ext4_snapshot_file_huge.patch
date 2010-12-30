@@ -1,0 +1,269 @@
+Index: linux_dir/fs/ext4/inode.c
+===================================================================
+--- linux_dir.orig/fs/ext4/inode.c	2010-12-30 06:27:37.000000000 +0530
++++ linux_dir/fs/ext4/inode.c	2010-12-30 06:32:11.000000000 +0530
+@@ -326,6 +326,9 @@
+ 		double_blocks = (1 << (ptrs_bits * 2));
+ 	int n = 0;
+ 	int final = 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	int tind;
++#endif
+ 
+ 	if (i_block < direct_blocks) {
+ 		offsets[n++] = i_block;
+@@ -345,6 +348,18 @@
+ 		offsets[n++] = (i_block >> ptrs_bits) & (ptrs - 1);
+ 		offsets[n++] = i_block & (ptrs - 1);
+ 		final = ptrs;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	} else if (ext4_snapshot_file(inode) &&
++			(tind = (i_block >> (ptrs_bits * 3))) <
++			EXT4_SNAPSHOT_NTIND_BLOCKS) {
++		/* use up to 4 triple indirect blocks to map 2^32 blocks */
++		i_block -= (tind << (ptrs_bits * 3));
++		offsets[n++] = EXT4_TIND_BLOCK + tind;
++		offsets[n++] = i_block >> (ptrs_bits * 2);
++		offsets[n++] = (i_block >> ptrs_bits) & (ptrs - 1);
++		offsets[n++] = i_block & (ptrs - 1);
++		final = ptrs;
++#endif
+ 	} else {
+ 		ext4_warning(inode->i_sb, "block %lu > max in inode %lu",
+ 			     i_block + direct_blocks +
+@@ -4891,6 +4906,15 @@
+ 	ext4_lblk_t last_block;
+ 	unsigned blocksize = inode->i_sb->s_blocksize;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	/* prevent partial truncate of snapshot files */
++	if (ext4_snapshot_file(inode) && inode->i_size != 0) {
++		snapshot_debug(1, "snapshot file (%lu) cannot be partly "
++				"truncated!\n", inode->i_ino);
++		return;
++	}
++
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
+ 	/* prevent truncate of files on snapshot list */
+ 	if (ext4_snapshot_list(inode)) {
+@@ -5017,6 +5041,22 @@
+ 		;
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	if (ext4_snapshot_file(inode)) {
++		int i;
++
++		/* Kill the remaining snapshot file triple indirect trees */
++		for (i = 1; i < EXT4_SNAPSHOT_NTIND_BLOCKS; i++) {
++			nr = i_data[EXT4_TIND_BLOCK + i];
++			if (!nr)
++				continue;
++			ext4_free_branches(handle, inode, NULL, &nr, &nr+1, 3);
++			i_data[EXT4_TIND_BLOCK + i] = 0;
++		}
++	}
++
++#endif
++
+ 	up_write(&ei->i_data_sem);
+ 	inode->i_mtime = inode->i_ctime = ext4_current_time(inode);
+ 	ext4_mark_inode_dirty(handle, inode);
+@@ -5242,8 +5282,14 @@
+ 	struct inode *inode = &(ei->vfs_inode);
+ 	struct super_block *sb = inode->i_sb;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
+ 	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
+-				EXT4_FEATURE_RO_COMPAT_HUGE_FILE)) {
++			EXT4_FEATURE_RO_COMPAT_HUGE_FILE) ||
++			 (ext4_snapshot_file(inode))) {
++#else
++	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
++				       EXT4_FEATURE_RO_COMPAT_HUGE_FILE) {
++#endif
+ 		/* we are using combined 48 bit field */
+ 		i_blocks = ((u64)le16_to_cpu(raw_inode->i_blocks_high)) << 32 |
+ 					le32_to_cpu(raw_inode->i_blocks_lo);
+@@ -5333,6 +5379,20 @@
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
+ 
+ 	if (ext4_snapshot_file(inode)) {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++		/*
++		 * ei->i_data[] has more blocks than raw_inode->i_block[].
++		 * Snapshot files don't use the first EXT4_NDIR_BLOCKS of
++		 * ei->i_data[] and store the extra blocks at the
++		 * begining of raw_inode->i_block[].
++		 */
++		for (block = EXT4_N_BLOCKS; block < EXT4_SNAPSHOT_N_BLOCKS;
++				block++) {
++			ei->i_data[block] =
++				raw_inode->i_block[block-EXT4_N_BLOCKS];
++			ei->i_data[block-EXT4_N_BLOCKS] = 0;
++		}
++#endif
+ 		ei->i_next_snapshot_ino =
+ 			le32_to_cpu(raw_inode->i_disk_version);
+ 		/*
+@@ -5496,9 +5556,16 @@
+ 		ext4_clear_inode_flag(inode, EXT4_INODE_HUGE_FILE);
+ 		return 0;
+ 	}
+-	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE))
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	/* snapshot files may be represented as huge files */
++	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
++		 && (!ext4_snapshot_file(inode)))
+ 		return -EFBIG;
++#else
+ 
++	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HUGE_FILE))
++		return -EFBIG;
++#endif
+ 	if (i_blocks <= 0xffffffffffffULL) {
+ 		/*
+ 		 * i_blocks can be represented in a 48 bit variable
+@@ -5556,6 +5623,7 @@
+ 			raw_inode->i_uid_high = 0;
+ 			raw_inode->i_gid_high = 0;
+ 		}
++
+ 	} else {
+ 		raw_inode->i_uid_low =
+ 			cpu_to_le16(fs_high2lowuid(inode->i_uid));
+@@ -5585,8 +5653,8 @@
+ 		struct super_block *sb = inode->i_sb;
+ 		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
+ 				EXT4_FEATURE_RO_COMPAT_LARGE_FILE) ||
+-				EXT4_SB(sb)->s_es->s_rev_level ==
+-				cpu_to_le32(EXT4_GOOD_OLD_REV)) {
++				 EXT4_SB(sb)->s_es->s_rev_level ==
++				 cpu_to_le32(EXT4_GOOD_OLD_REV)) {
+ 			/* If this is the first large file
+ 			 * created, add a flag to the superblock.
+ 			 */
+@@ -5628,6 +5696,19 @@
+ 	}
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
+ 	if (ext4_snapshot_file(inode)) {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++		/*
++		 * ei->i_data[] has more blocks than raw_inode->i_block[].
++		 * Snapshot files don't use the first EXT4_NDIR_BLOCKS of
++		 * ei->i_data[] and store the extra blocks at the
++		 * begining of raw_inode->i_block[].
++		 */
++		for (block = EXT4_N_BLOCKS; block < EXT4_SNAPSHOT_N_BLOCKS;
++				block++) {
++			raw_inode->i_block[block-EXT4_N_BLOCKS] =
++				ei->i_data[block];
++		}
++#endif
+ 		raw_inode->i_disk_version =
+ 			cpu_to_le32(ei->i_next_snapshot_ino);
+ 		/* dynamic snapshot flags are not stored on-disk */
+@@ -5646,6 +5727,12 @@
+ 
+ 	ext4_update_inode_fsync_trans(handle, inode, 0);
+ out_brelse:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++		ext4_warning(inode->i_sb,
++				"ino=%lu, i_blocks=%lld is too big",
++				inode->i_ino, (long long)inode->i_blocks);
++#endif
++
+ 	brelse(bh);
+ 	ext4_std_error(inode->i_sb, err);
+ 	return err;
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-12-30 06:27:37.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-12-30 06:27:38.000000000 +0530
+@@ -162,3 +162,16 @@
+ 	  Snapshot inode is stored differently in memory and on disk.
+ 	  During store and load of snapshot inode, some of the inode flags
+ 	  and fields are converted.
++
++config EXT4_FS_SNAPSHOT_FILE_HUGE
++	bool "snapshot file - increase maximum file size limit to 16TB"
++	depends on EXT4_FS_SNAPSHOT_FILE
++	default y
++	help
++	  Files larger than 2TB use Ext4 huge_file flag to store i_blocks
++	  in file system blocks units, so the upper limit on snapshot actual
++	  size is increased from 512*2^32 = 2TB to 4K*2^32 = 16TB,
++	  which is also the upper limit on file system size.
++	  To map 2^32 logical blocks, 4 triple indirect blocks are used instead
++	  of just one.  The extra 3 triple indirect blocks are stored in-place
++	  of direct blocks, which are not in use by snapshot files.
+Index: linux_dir/fs/ext4/ext4.h
+===================================================================
+--- linux_dir.orig/fs/ext4/ext4.h	2010-12-30 06:27:37.000000000 +0530
++++ linux_dir/fs/ext4/ext4.h	2010-12-30 06:27:38.000000000 +0530
+@@ -344,6 +344,21 @@
+ #define	EXT4_DIND_BLOCK			(EXT4_IND_BLOCK + 1)
+ #define	EXT4_TIND_BLOCK			(EXT4_DIND_BLOCK + 1)
+ #define	EXT4_N_BLOCKS			(EXT4_TIND_BLOCK + 1)
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++/*
++ * Snapshot files have different indirection mapping that can map up to 2^32
++ * logical blocks, so they can cover the mapped filesystem block address space.
++ * Ext4 must use either 4K or 8K blocks (depending on PAGE_SIZE).
++ * With 8K blocks, 1 triple indirect block maps 2^33 logical blocks.
++ * With 4K blocks (the system default), each triple indirect block maps 2^30
++ * logical blocks, so 4 triple indirect blocks map 2^32 logical blocks.
++ * Snapshot files in small filesystems (<= 4G), use only 1 double indirect
++ * block to map the entire filesystem.
++ */
++#define	EXT4_SNAPSHOT_NTIND_BLOCKS	4
++#define	EXT4_SNAPSHOT_N_BLOCKS		(EXT4_TIND_BLOCK + \
++					 EXT4_SNAPSHOT_NTIND_BLOCKS)
++#endif
+ 
+ /*
+  * Inode flags
+@@ -844,7 +859,11 @@
+  * fourth extended file system inode data in memory
+  */
+ struct ext4_inode_info {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	__le32	i_data[EXT4_SNAPSHOT_N_BLOCKS]; /* unconverted */
++#else
+ 	__le32	i_data[15];	/* unconverted */
++#endif
+ 	__u32	i_dtime;
+ 	ext4_fsblk_t	i_file_acl;
+ 
+Index: linux_dir/fs/ext4/super.c
+===================================================================
+--- linux_dir.orig/fs/ext4/super.c	2010-12-30 06:27:34.000000000 +0530
++++ linux_dir/fs/ext4/super.c	2010-12-30 06:27:38.000000000 +0530
+@@ -2310,7 +2310,11 @@
+ 
+ 	res += 1LL << (bits-2);
+ 	res += 1LL << (2*(bits-2));
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	res += EXT4_SNAPSHOT_NTIND_BLOCKS * (1LL << (3*(bits-2)));
++#else
+ 	res += 1LL << (3*(bits-2));
++#endif
+ 	res <<= bits;
+ 	if (res > upper_limit)
+ 		res = upper_limit;
+@@ -3288,8 +3292,14 @@
+ 		}
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
++	has_huge_files = EXT4_HAS_RO_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_RO_COMPAT_HUGE_FILE |
++				 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
++#else
+ 	has_huge_files = EXT4_HAS_RO_COMPAT_FEATURE(sb,
+ 				EXT4_FEATURE_RO_COMPAT_HUGE_FILE);
++#endif
+ 	sbi->s_bitmap_maxbytes = ext4_max_bitmap_size(sb->s_blocksize_bits,
+ 						      has_huge_files);
+ 	sb->s_maxbytes = ext4_max_size(sb->s_blocksize_bits, has_huge_files);
