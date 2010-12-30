@@ -166,7 +166,21 @@ extern int ext4_snapshot_test_and_cow(const char *where,
 #define ext4_snapshot_cow(handle, inode, bh, cow) 0
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+extern int ext4_snapshot_test_and_move(const char *where,
+		handle_t *handle, struct inode *inode,
+		ext4_fsblk_t block, int maxblocks, int move);
+
+/*
+ * test if blocks should be moved to snapshot
+ * and if they should, try to move them to the active snapshot
+ */
+#define ext4_snapshot_move(handle, inode, block, num, move)	\
+	ext4_snapshot_test_and_move(__func__, handle, inode,	\
+			block, num, move)
+#else
 #define ext4_snapshot_move(handle, inode, block, num, move) (num)
+#endif
 
 /*
  * Block access functions

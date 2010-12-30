@@ -12,6 +12,9 @@
  * Ext4 snapshots core functions.
  */
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+#include <linux/quotaops.h>
+#endif
 #include "snapshot.h"
 #include "ext4.h"
 
@@ -407,6 +410,112 @@ cowed:
 out:
 	brelse(sbh);
 	/* END COWing */
+	ext4_snapshot_cow_end(where, handle, block, err);
+	return err;
+}
+
+#endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+/*
+ * ext4_snapshot_test_and_move - move blocks to active snapshot
+ * @where:	name of caller function
+ * @handle:	JBD handle
+ * @inode:	owner of blocks (NULL for global metadata blocks)
+ * @block:	address of first block to move
+ * @maxblocks:	max. blocks to move
+ * @move:	if false, only test if @block needs to be moved
+ *
+ * Return values:
+ * > 0 - no. of blocks that were (or needs to be) moved to snapshot
+ * = 0 - @block doesn't need to be moved
+ * < 0 - error
+ */
+int ext4_snapshot_test_and_move(const char *where, handle_t *handle,
+	struct inode *inode, ext4_fsblk_t block, int maxblocks, int move)
+{
+	struct super_block *sb = handle->h_transaction->t_journal->j_private;
+	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
+	ext4_fsblk_t blk = 0;
+	int err = 0, count = maxblocks;
+	int excluded = 0;
+
+	if (!active_snapshot)
+		/* no active snapshot - no need to move */
+		return 0;
+
+	ext4_snapshot_trace_cow(where, handle, sb, inode, NULL, block, move);
+
+	BUG_ON(IS_COWING(handle) || inode == active_snapshot);
+
+	/* BEGIN moving */
+	ext4_snapshot_cow_begin(handle);
+
+	if (inode)
+		excluded = ext4_snapshot_excluded(inode);
+	if (excluded) {
+		/* don't move excluded file block to snapshot */
+		snapshot_debug_hl(4, "file (%lu) excluded from snapshot\n",
+				inode->i_ino);
+		move = 0;
+	}
+
+	if (excluded)
+		goto out;
+	if (!err) {
+		/* block not in COW bitmap - no need to move */
+		trace_cow_inc(handle, ok_bitmap);
+		goto out;
+	}
+
+#ifdef CONFIG_EXT4_FS_DEBUG
+	if (inode == NULL &&
+		!(EXT4_I(active_snapshot)->i_flags & EXT4_UNRM_FL)) {
+		/*
+		 * This is ext4_group_extend() "freeing" the blocks that
+		 * were added to the block group.  These block should not be
+		 * moved to snapshot, unless the snapshot is marked with the
+		 * UNRM flag for large snapshot creation test.
+		 */
+		trace_cow_inc(handle, ok_bitmap);
+		err = 0;
+		goto out;
+	}
+#endif
+
+	/* count blocks are in use by snapshot - check if @block is mapped */
+	err = ext4_snapshot_map_blocks(handle, active_snapshot, block, 1, &blk,
+					SNAPMAP_READ);
+	if (err < 0)
+		goto out;
+	if (err > 0) {
+		/* block already mapped in snapshot - no need to move */
+		trace_cow_inc(handle, ok_mapped);
+		err = 0;
+		goto out;
+	}
+
+	/* @count blocks need to be moved */
+	err = count;
+	if (!move)
+		/* don't move - we were just checking */
+		goto out;
+
+	/* try to move @count blocks from inode to snapshot */
+	err = ext4_snapshot_map_blocks(handle, active_snapshot, block,
+			count, NULL, SNAPMAP_MOVE);
+	if (err <= 0)
+		goto out;
+	count = err;
+	/*
+	 * User should no longer be charged for these blocks.
+	 * Snapshot file owner was charged for these blocks
+	 * when they were mapped to snapshot file.
+	 */
+	if (inode)
+		dquot_free_block(inode, count);
+	trace_cow_add(handle, moved, count);
+out:
+	/* END moving */
 	ext4_snapshot_cow_end(where, handle, block, err);
 	return err;
 }

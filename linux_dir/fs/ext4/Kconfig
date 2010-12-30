@@ -204,3 +204,13 @@ config EXT4_FS_SNAPSHOT_BLOCK_COW
 	help
 	  Implementation of copying blocks into a snapshot file.
 	  This mechanism is used to copy-on-write metadata blocks to snapshot.
+
+config EXT4_FS_SNAPSHOT_BLOCK_MOVE
+	bool "snapshot block operation - move blocks to snapshot"
+	depends on EXT4_FS_SNAPSHOT_BLOCK
+	default y
+	help
+	  Implementation of moving blocks into a snapshot file.
+	  The move block command maps an allocated blocks to the snapshot file,
+	  allocating only the indirect blocks when needed.
+	  This mechanism is used to move-on-write data blocks to snapshot.

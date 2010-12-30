@@ -1,5 +1,5 @@
 /*
- *  linux/fs/ext4/inode.c
+ *  Linux/fs/ext4/inode.c
  *
  * Copyright (C) 1992, 1993, 1994, 1995
  * Remy Card (card@masi.ibp.fr)
@@ -664,6 +664,13 @@ static int ext4_alloc_blocks(handle_t *handle, struct inode *inode,
 			new_blocks[index++] = current_block++;
 			count--;
 		}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+		if (blks == 0 && target == 0) {
+			/* mapping data blocks */
+			*err = 0;
+			return 0;
+		}
+#endif
 		if (count > 0) {
 			/*
 			 * save the new block number
@@ -754,10 +761,17 @@ failed_out:
  *	ext4_alloc_block() (normally -ENOSPC). Otherwise we set the chain
  *	as described above and return 0.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+static int ext4_alloc_branch_cow(handle_t *handle, struct inode *inode,
+			ext4_fsblk_t iblock, int indirect_blks,
+				  int *blks, ext4_fsblk_t goal,
+				  int *offsets, Indirect *branch, int cmd)
+#else
 static int ext4_alloc_branch(handle_t *handle, struct inode *inode,
 			     ext4_lblk_t iblock, int indirect_blks,
 			     int *blks, ext4_fsblk_t goal,
 			     ext4_lblk_t *offsets, Indirect *branch)
+#endif
 {
 	int blocksize = inode->i_sb->s_blocksize;
 	int i, n = 0;
@@ -766,7 +780,27 @@ static int ext4_alloc_branch(handle_t *handle, struct inode *inode,
 	int num;
 	ext4_fsblk_t new_blocks[4];
 	ext4_fsblk_t current_block;
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+	if (SNAPMAP_ISMOVE(cmd)) {
+		/* mapping snapshot block to block device block */
+		current_block = SNAPSHOT_BLOCK(iblock);
+		num = 0;
+		if (indirect_blks > 0) {
+			/* allocating only indirect blocks */
+			ext4_alloc_blocks(handle, inode, iblock, goal,
+					  indirect_blks, 0, new_blocks, &err);
+			if (err)
+				return err;
+		}
+		/* charge snapshot file owner for moved blocks */
+		if (dquot_alloc_block(inode, *blks)) {
+			err = -EDQUOT;
+			goto failed;
+		}
+		num = *blks;
+		new_blocks[indirect_blks] = current_block;
+	} else
+#endif
 	num = ext4_alloc_blocks(handle, inode, iblock, goal, indirect_blks,
 				*blks, new_blocks, &err);
 	if (err)
@@ -838,9 +872,15 @@ failed:
 	}
 	for (i = n+1; i < indirect_blks; i++)
 		ext4_free_blocks(handle, inode, 0, new_blocks[i], 1, 0);
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+	if (SNAPMAP_ISMOVE(cmd) && num > 0)
+		/* don't charge snapshot file owner if move failed */
+		dquot_free_block(inode, num);
+	else if (num > 0)
+		ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
+#else
 	ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
-
+#endif
 	return err;
 }
 
@@ -858,9 +898,14 @@ failed:
  * inode (->i_blocks, etc.). In case of success we end up with the full
  * chain to new block and return 0.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+static int ext4_splice_branch_cow(handle_t *handle, struct inode *inode,
+			long block, Indirect *where, int num, int blks, int cmd)
+#else
 static int ext4_splice_branch(handle_t *handle, struct inode *inode,
 			      ext4_lblk_t block, Indirect *where, int num,
 			      int blks)
+#endif
 {
 	int i;
 	int err = 0;
@@ -895,6 +940,13 @@ static int ext4_splice_branch(handle_t *handle, struct inode *inode,
 		for (i = 1; i < blks; i++)
 			*(where->p + i) = cpu_to_le32(current_block++);
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+#ifdef WARNING_NOT_IMPLEMENTED
+	if (SNAPMAP_ISMOVE(cmd))
+		/* don't update i_block_alloc_info with moved block */
+		block_i = NULL;
+#endif
+#endif
 
 	/* We are done with atomic stuff, now do the rest of housekeeping */
 	/* had we spliced it onto indirect block? */
@@ -931,9 +983,17 @@ err_out:
 		ext4_free_blocks(handle, inode, where[i].bh, 0, 1,
 				 EXT4_FREE_BLOCKS_FORGET);
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+	if (SNAPMAP_ISMOVE(cmd))
+		/* don't charge snapshot file owner if move failed */
+		dquot_free_block(inode, blks);
+	else
+		ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
+				 blks, 0);
+#else
 	ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
 			 blks, 0);
-
+#endif
 	return err;
 }
 
@@ -1097,9 +1157,15 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	/*
 	 * Block out ext4_truncate while we alter the tree
 	 */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+	err = ext4_alloc_branch_cow(handle, inode, map->m_lblk, indirect_blks,
+				     &count, goal, offsets + (partial - chain),
+				     partial, flags);
+#else
 	err = ext4_alloc_branch(handle, inode, map->m_lblk, indirect_blks,
 				&count, goal,
 				offsets + (partial - chain), partial);
+#endif
 	if (err)
 		goto out_mutex;
 
@@ -1148,8 +1214,13 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	 * may need to return -EAGAIN upwards in the worst case.  --sct
 	 */
 	if (!err)
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
+		err = ext4_splice_branch_cow(handle, inode, map->m_lblk,
+				     partial, indirect_blks, count, flags);
+#else
 		err = ext4_splice_branch(handle, inode, map->m_lblk,
 					 partial, indirect_blks, count);
+#endif
  out_mutex:
 	if (err)
 		goto cleanup;
