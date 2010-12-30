@@ -97,6 +97,13 @@
 #define SNAPSHOT_SET_DISABLED(inode)		\
 	i_size_write((inode), 0)
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+enum ext4_bh_state_bits {
+	BH_Partial_Write = 31,	/* Buffer should be read before write */
+};
+
+BUFFER_FNS(Partial_Write, partial_write)
+#endif
 
 
 #define ext4_snapshot_cow(handle, inode, bh, cow) 0
@@ -156,6 +163,33 @@ static inline int ext4_snapshot_get_create_access(handle_t *handle,
 	 * to snapshot.  In the latter case, -EIO will be returned.
 	 */
 	return ext4_snapshot_cow(handle, NULL, bh, 0);
+}
+
+#endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+/*
+ * get_move_access() - move block to snapshot
+ * @handle:	JBD handle
+ * @inode:	owner of @block
+ * @block:	address of @block
+ * @move:	if false, only test if @block needs to be moved
+ *
+ * Called from ext4_get_blocks_handle() before overwriting a data block,
+ * when buffer_move() is true.  Specifically, only data blocks of regular files,
+ * whose data is not being journaled are moved on full page write.
+ * Journaled data blocks are COWed on get_write_access().
+ * Snapshots and excluded files blocks are never moved-on-write.
+ * If @move is true, then truncate_mutex is held.
+ *
+ * Return values:
+ * = 1 - @block was moved or may not be overwritten
+ * = 0 - @block may be overwritten
+ * < 0 - error
+ */
+static inline int ext4_snapshot_get_move_access(handle_t *handle,
+		struct inode *inode, ext4_fsblk_t block, int move)
+{
+	return ext4_snapshot_move(handle, inode, block, 1, move);
 }
 
 #endif
@@ -220,6 +254,20 @@ extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
 
 
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+/*
+ * check if @inode data blocks should be moved-on-write
+ */
+static inline int ext4_snapshot_should_move_data(struct inode *inode)
+{
+	/* when a data block is journaled, it is already COWed as metadata */
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		return 0;
+	if (ext4_should_journal_data(inode))
+		return 0;
+	return 1;
+}
+#endif
 
 
 

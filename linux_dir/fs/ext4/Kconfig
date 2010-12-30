@@ -117,3 +117,13 @@ config EXT4_FS_SNAPSHOT_HOOKS_DELETE
 	  Before deleting file blocks in ext4_free_blocks(),
 	  we call the snapshot API snapshot_get_delete_access(),
 	  to optionally move the block to the snapshot file.
+
+config EXT4_FS_SNAPSHOT_HOOKS_DATA
+	bool "snapshot hooks - move data blocks"
+	depends on EXT4_FS_SNAPSHOT
+	default y
+	help
+	  Before every regular file data buffer write,
+	  the function ext4_get_block() is called to map the buffer to disk.
+	  We use this hook to call the snapshot API snapshot_get_move_access(),
+	  to optionally move the block to the snapshot file.

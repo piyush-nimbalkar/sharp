@@ -974,6 +974,26 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 
 	partial = ext4_get_branch(inode, depth, offsets, chain, &err);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	if (!partial && flags &&
+			ext4_snapshot_should_move_data(inode)) {
+		first_block = le32_to_cpu(chain[depth - 1].key);
+		blocks_to_boundary = 0;
+		/* should move 1 data block to snapshot? */
+		err = ext4_snapshot_get_move_access(handle, inode,
+				first_block, 0);
+		if (err)
+			/* do not map found block */
+			partial = chain + depth - 1;
+		if (err < 0)
+			/* cleanup the whole chain and exit */
+			goto cleanup;
+		if (err > 0)
+			/* check again under truncate_mutex */
+			err = -EAGAIN;
+	}
+
+#endif
 	/* Simplest case - block found, no allocation needed */
 	if (!partial) {
 		first_block = le32_to_cpu(chain[depth - 1].key);
@@ -1019,6 +1039,43 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	if (err)
 		goto out_mutex;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	if (*(partial->p)) {
+		int ret;
+#ifdef WARNING_NOT_IMPLEMENTED
+		/* old block is being replaced with a new block */
+		if (buffer_partial_write(bh_result) &&
+			!buffer_uptodate(bh_result)) {
+			/* read old block data before moving it to snapshot */
+			map_bh(bh_result, inode->i_sb,
+			le32_to_cpu(*(partial->p)));
+			ll_rw_block(READ, 1, &bh_result);
+			wait_on_buffer(bh_result);
+			/* clear old block mapping */
+			clear_buffer_mapped(bh_result);
+			if (!buffer_uptodate(bh_result)) {
+				err = -EIO;
+				goto out_mutex;
+			}
+	      }
+		if (buffer_partial_write(bh_result))
+			/* prevent zero out of page in block_write_begin() */
+			SetPageUptodate(bh_result->b_page);
+#endif
+		/* move old block to snapshot */
+		ret = ext4_snapshot_get_move_access(handle, inode,
+				le32_to_cpu(*(partial->p)), 1);
+		if (ret < 1) {
+			/* failed to move to snapshot - free new block */
+			ext4_free_blocks(handle, inode, partial->bh,
+				le32_to_cpu(partial->key), 1, flags);
+			err = ret ? : -EIO;
+			goto out_mutex;
+		}
+		/* block moved to snapshot - continue to splice new block */
+		err = 0;
+	}
+#endif
 	/*
 	 * The ext4_splice_branch call will free and forget any buffers
 	 * on the new chain if there is a failure, but that risks using
@@ -1596,6 +1653,9 @@ static int ext4_write_begin(struct file *file, struct address_space *mapping,
 			    loff_t pos, unsigned len, unsigned flags,
 			    struct page **pagep, void **fsdata)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	struct buffer_head *bh = NULL;
+#endif
 	struct inode *inode = mapping->host;
 	int ret, needed_blocks;
 	handle_t *handle;
@@ -1632,6 +1692,36 @@ retry:
 		goto out;
 	}
 	*pagep = page;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	/*
+	 * XXX: We can also check ext4_snapshot_has_active() here and we don't
+	 * need to unmap the buffers is there is no active snapshot, but the
+	 * result must be valid throughout the writepage() operation and to
+	 * guarantee this we have to know that the transaction is not restarted.
+	 * Can we count on that?
+	 */
+	if (ext4_snapshot_should_move_data(inode)) {
+		if (!page_has_buffers(page))
+			create_empty_buffers(page, inode->i_sb->s_blocksize, 0);
+		/* snapshots only work when blocksize == pagesize */
+		bh = page_buffers(page);
+		if (len < PAGE_CACHE_SIZE)
+			/* read block before moving it to snapshot */
+			set_buffer_partial_write(bh);
+		else
+			clear_buffer_partial_write(bh);
+		/*
+		 * make sure that get_block() is called even if the buffer is
+		 * mapped, but not if it is already a part of any transaction.
+		 * in data=ordered,the only mode supported by ext4, all dirty
+		 * data buffers are flushed on snapshot take via freeze_fs()
+		 * API.
+		 */
+		if (buffer_mapped(bh) && !buffer_jbd(bh))
+			clear_buffer_mapped(bh);
+	}
+
+#endif
 
 	if (ext4_should_dioread_nolock(inode))
 		ret = __block_write_begin(page, pos, len, ext4_get_block_write);
@@ -1642,6 +1732,14 @@ retry:
 		ret = walk_page_buffers(handle, page_buffers(page),
 				from, to, NULL, do_journal_get_write_access);
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	/*
+	 * buffer_partial_write() is only used by this function to pass the
+	 * information to ext4_get_block() and should be cleared on exit.
+	 */
+	if (bh)
+		clear_buffer_partial_write(bh);
+#endif
 
 	if (ret) {
 		unlock_page(page);
@@ -4242,6 +4340,20 @@ int ext4_block_truncate_page(handle_t *handle,
 			goto unlock;
 	}
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+	/* check if block needs to be moved to snapshot before zeroing */
+	if (ext4_snapshot_should_move_data(inode)) {
+		err = ext4_get_block(inode, iblock, bh, 1);
+		if (err)
+			goto unlock;
+		if (buffer_new(bh)) {
+			unmap_underlying_metadata(bh->b_bdev,
+					bh->b_blocknr);
+			clear_buffer_new(bh);
+		}
+	}
+
+#endif
 	if (ext4_should_journal_data(inode)) {
 		BUFFER_TRACE(bh, "get write access");
 		err = ext4_journal_get_write_access(handle, bh);
