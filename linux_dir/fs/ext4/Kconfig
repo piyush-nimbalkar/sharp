@@ -312,6 +312,15 @@ config EXT4_FS_SNAPSHOT_CTL_FIX
 	  block as well as the journal inode and last snapshot inode fields.
 	  All snapshot inodes are cleared (to appear as empty inodes).
 
+config EXT4_FS_SNAPSHOT_CTL_RESERVE
+	bool "snapshot control - reserve disk space for snapshot"
+	depends on EXT4_FS_SNAPSHOT_CTL
+	default y
+	help
+	  Ensure there is enough disk space for snapshot file future use.
+	  Reserve disk space on snapshot take based on file system overhead
+	  size, number of directories and number of blocks/inodes in use.
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK

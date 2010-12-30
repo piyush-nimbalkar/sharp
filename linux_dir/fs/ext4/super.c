@@ -4683,9 +4683,19 @@ restore_opts:
 	return err;
 }
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+	return ext4_statfs_sb(dentry->d_sb, buf);
+}
+
+int ext4_statfs_sb(struct super_block *sb, struct kstatfs *buf)
+{
+#else
 static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct super_block *sb = dentry->d_sb;
+#endif
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct ext4_super_block *es = sbi->s_es;
 	u64 fsid;
@@ -4737,6 +4747,18 @@ static int ext4_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = buf->f_bfree - ext4_r_blocks_count(es);
 	if (buf->f_bfree < ext4_r_blocks_count(es))
 		buf->f_bavail = 0;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	if (sbi->s_active_snapshot) {
+		if (buf->f_bfree < ext4_r_blocks_count(es) +
+				le64_to_cpu(es->s_snapshot_r_blocks_count))
+			buf->f_bavail = 0;
+		else
+			buf->f_bavail -=
+				le64_to_cpu(es->s_snapshot_r_blocks_count);
+	}
+	buf->f_spare[0] = percpu_counter_sum_positive(&sbi->s_dirs_counter);
+	buf->f_spare[1] = sbi->s_overhead_last;
+#endif
 	buf->f_files = le32_to_cpu(es->s_inodes_count);
 	buf->f_ffree = percpu_counter_sum_positive(&sbi->s_freeinodes_counter);
 	buf->f_namelen = EXT4_NAME_LEN;

@@ -354,6 +354,10 @@ extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
 					   struct ext4_iloc *iloc);
 
 /* super.c */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+struct kstatfs;
+extern int ext4_statfs_sb(struct super_block *sb, struct kstatfs *buf);
+#endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 /* tests if @inode is a snapshot file */

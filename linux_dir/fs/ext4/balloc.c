@@ -503,12 +503,35 @@ error_return:
 static int ext4_has_free_blocks(struct ext4_sb_info *sbi, s64 nblocks)
 {
 	s64 free_blocks, dirty_blocks, root_blocks;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	ext4_fsblk_t snapshot_r_blocks;
+	handle_t *handle = journal_current_handle();
+#endif
 	struct percpu_counter *fbc = &sbi->s_freeblocks_counter;
 	struct percpu_counter *dbc = &sbi->s_dirtyblocks_counter;
 
 	free_blocks  = percpu_counter_read_positive(fbc);
 	dirty_blocks = percpu_counter_read_positive(dbc);
 	root_blocks = ext4_r_blocks_count(sbi->s_es);
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	if (handle && sbi->s_active_snapshot) {
+		snapshot_r_blocks =
+			le64_to_cpu(sbi->s_es->s_snapshot_r_blocks_count);
+		/*
+		 * snapshot reserved blocks for COWing to active snapshot
+		 */
+		if (free_blocks < snapshot_r_blocks + 1 &&
+		    !IS_COWING(handle)) {
+			return 0;
+		}
+		/*
+		 * mortal users must reserve blocks for both snapshot and
+		 * root user
+		 */
+		root_blocks += snapshot_r_blocks;
+	}
+#endif
 
 	if (free_blocks - (nblocks + root_blocks + dirty_blocks) <
 						EXT4_FREEBLOCKS_WATERMARK) {

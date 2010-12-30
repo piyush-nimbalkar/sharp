@@ -12,6 +12,9 @@
  * Ext4 snapshots control functions.
  */
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+#include <linux/statfs.h>
+#endif
 #include "snapshot.h"
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
@@ -722,6 +725,10 @@ int ext4_snapshot_take(struct inode *inode)
 	int i;
 #endif
 	int err = -EIO;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	u64 snapshot_r_blocks;
+	struct kstatfs statfs;
+#endif
 
 	if (!sbi->s_sbh)
 		goto out_err;
@@ -750,6 +757,34 @@ int ext4_snapshot_take(struct inode *inode)
 	}
 
 	err = -EIO;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	/* update fs statistics to calculate snapshot reserved space */
+	if (ext4_statfs_sb(sb, &statfs)) {
+		snapshot_debug(1, "failed to statfs before snapshot (%u) "
+			       "take\n", inode->i_generation);
+		goto out_err;
+	}
+	/*
+	 * Calculate maximum disk space for snapshot file metadata based on:
+	 * 1 indirect block per 1K fs blocks (to map moved data blocks)
+	 * +1 data block per 1K fs blocks (to copy indirect blocks)
+	 * +1 data block per fs meta block (to copy meta blocks)
+	 * +1 data block per directory (to copy small directory index blocks)
+	 * +1 data block per 64 inodes (to copy large directory index blocks)
+	 * XXX: reserved space may be too small in data jounaling mode,
+	 *      which is currently not supported.
+	 */
+	snapshot_r_blocks = 2 * (statfs.f_blocks >>
+				 SNAPSHOT_ADDR_PER_BLOCK_BITS) +
+		statfs.f_spare[0] + statfs.f_spare[1] +
+		(statfs.f_files - statfs.f_ffree) / 64;
+
+	/* verify enough free space before taking the snapshot */
+	if (statfs.f_bfree < snapshot_r_blocks) {
+		err = -ENOSPC;
+		goto out_err;
+	}
+#endif
 
 	/*
 	 * flush journal to disk and clear the RECOVER flag
@@ -885,6 +920,9 @@ fix_inode_copy:
 		goto out_unlockfs;
 
 	/* set as on-disk active snapshot */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_RESERVE
+	sbi->s_es->s_snapshot_r_blocks_count = cpu_to_le64(snapshot_r_blocks);
+#endif
 	sbi->s_es->s_snapshot_id =
 		cpu_to_le32(le32_to_cpu(sbi->s_es->s_snapshot_id)+1);
 	if (sbi->s_es->s_snapshot_id == 0)
