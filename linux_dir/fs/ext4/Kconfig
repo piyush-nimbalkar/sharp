@@ -145,3 +145,11 @@ config EXT4_FS_SNAPSHOT_FILE_READ
 	  On active snapshot file page read, the function ext4_get_block()
 	  is called to map the page to a disk block.  If the page is not mapped
 	  in the snapshot file a direct mapping to the block device is returned.
+
+config EXT4_FS_SNAPSHOT_FILE_PERM
+	bool "snapshot file - permissions"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Enforce snapshot file permissions.
+	  Write, truncate and unlink of snapshot inodes is not allowed.

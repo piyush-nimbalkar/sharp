@@ -4891,6 +4891,15 @@ void ext4_truncate(struct inode *inode)
 	ext4_lblk_t last_block;
 	unsigned blocksize = inode->i_sb->s_blocksize;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
+	/* prevent truncate of files on snapshot list */
+	if (ext4_snapshot_list(inode)) {
+		snapshot_debug(1, "snapshot (%u) cannot be truncated!\n",
+				inode->i_generation);
+		return;
+	}
+
+#endif
 	if (!ext4_can_truncate(inode))
 		return;
 
