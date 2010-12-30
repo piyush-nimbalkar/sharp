@@ -222,6 +222,16 @@ int ext4_snapshot_set_flags(handle_t *handle, struct inode *inode,
 		goto non_snapshot;
 	}
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_DUMP
+#ifdef CONFIG_EXT4_FS_DEBUG
+	if ((oldflags ^ flags) & EXT4_NODUMP_FL) {
+		/* print snapshot inode map on chattr -d */
+		ext4_snapshot_dump(1, inode);
+		/* restore the 'No_Dump' flag */
+		flags |= EXT4_NODUMP_FL;
+	}
+#endif
+#endif
 
 
 	if ((flags ^ oldflags) & EXT4_SNAPFILE_ENABLED_FL) {
@@ -940,6 +950,9 @@ out_unlockfs:
 
 	snapshot_debug(1, "snapshot (%u) has been taken\n",
 			inode->i_generation);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_DUMP
+	ext4_snapshot_dump(5, inode);
+#endif
 
 out_err:
 	brelse(sbh);
@@ -1283,6 +1296,9 @@ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
 		snapshot_debug(1, "snapshot (%d) loaded\n",
 			       snapshot_id);
 		num++;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_DUMP
+		ext4_snapshot_dump(5, inode);
+#endif
 
 		if (!has_active && load_ino == active_ino) {
 			/* active snapshot was loaded */

@@ -94,6 +94,13 @@ static inline void exit_ext4_snapshot_debug(void)
 #define exit_ext4_snapshot_debug()
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_DUMP
+#ifdef CONFIG_EXT4_FS_DEBUG
+extern void ext4_snapshot_dump(int n, struct inode *inode);
+#else
+#define ext4_snapshot_dump(n, i)
+#endif
+#endif
 
 /* debug levels */
 #define SNAP_ERR	1 /* errors and summary */

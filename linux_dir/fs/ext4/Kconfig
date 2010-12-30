@@ -321,6 +321,14 @@ config EXT4_FS_SNAPSHOT_CTL_RESERVE
 	  Reserve disk space on snapshot take based on file system overhead
 	  size, number of directories and number of blocks/inodes in use.
 
+config EXT4_FS_SNAPSHOT_CTL_DUMP
+	bool "snapshot control - dump snapshot file blocks map"
+	depends on EXT4_FS_SNAPSHOT_CTL
+	depends on EXT4_FS_DEBUG
+	default y
+	help
+	  Use chattr -d to print the blocks map of a snapshot file.
+	  Snapshot debugging should be enabled.
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK
