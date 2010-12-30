@@ -214,3 +214,12 @@ config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	  The move block command maps an allocated blocks to the snapshot file,
 	  allocating only the indirect blocks when needed.
 	  This mechanism is used to move-on-write data blocks to snapshot.
+
+config EXT4_FS_SNAPSHOT_BLOCK_BITMAP
+	bool "snapshot block operation - copy block bitmap to snapshot"
+	depends on EXT4_FS_SNAPSHOT_BLOCK
+	default y
+	help
+	  The snapshot copy of the file system block bitmap is called the COW
+	  bitmap and it is used to check if a block was allocated at the time
+	  that the snapshot was taken.

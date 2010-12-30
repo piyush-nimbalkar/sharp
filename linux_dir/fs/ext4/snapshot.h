@@ -215,7 +215,15 @@ static inline int ext4_snapshot_get_write_access(handle_t *handle,
 static inline int ext4_snapshot_get_undo_access(handle_t *handle,
 		struct buffer_head *bh)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_BITMAP
+	/*
+	 * undo access is only requested for block bitmaps, which should be
+	 * COWed in ext4_snapshot_test_cow_bitmap(), even if we pass @cow=0.
+	 */
+	return ext4_snapshot_cow(handle, NULL, bh, 0);
+#else
 	return ext4_snapshot_cow(handle, NULL, bh, 1);
+#endif
 }
 
 /*
