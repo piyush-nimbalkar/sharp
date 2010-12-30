@@ -315,6 +315,10 @@ int __ext4_journal_stop(const char *where, unsigned int line, handle_t *handle)
 	int err;
 	int rc;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	ext4_journal_trace(SNAP_WARN, where, handle, 0);
+
+#endif
 	if (!ext4_handle_valid(handle)) {
 		ext4_put_nojournal(handle);
 		return 0;

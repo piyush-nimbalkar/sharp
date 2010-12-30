@@ -24,6 +24,9 @@ int __ext4_journal_get_undo_access(const char *where, unsigned int line,
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__, bh,
 						  handle, err);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+		ext4_journal_trace(SNAP_DEBUG, where, handle, 1);
+#endif
 	}
 	return err;
 }
@@ -49,6 +52,9 @@ int __ext4_journal_get_write_access(const char *where, unsigned int line,
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__, bh,
 						  handle, err);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	ext4_journal_trace(SNAP_DEBUG, where, handle, 1);
+#endif
 	}
 	return err;
 }
@@ -100,6 +106,9 @@ int __ext4_forget(const char *where, unsigned int line, handle_t *handle,
 			if (err)
 				ext4_journal_abort_handle(where, line, __func__,
 							  bh, handle, err);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+			ext4_journal_trace(SNAP_DEBUG, where, handle, 1);
+#endif
 			return err;
 		}
 		return 0;
@@ -117,6 +126,9 @@ int __ext4_forget(const char *where, unsigned int line, handle_t *handle,
 			   "error %d when attempting revoke", err);
 	}
 	BUFFER_TRACE(bh, "exit");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	ext4_journal_trace(SNAP_DEBUG, where, handle, 1);
+#endif
 	return err;
 }
 
@@ -134,6 +146,10 @@ int __ext4_journal_get_create_access(const char *where, unsigned int line,
 		if (err)
 			ext4_journal_abort_handle(where, line, __func__,
 						  bh, handle, err);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	ext4_journal_trace(SNAP_DEBUG, where, handle, -1);
+#endif
+
 	}
 	return err;
 }
@@ -171,6 +187,75 @@ out:
 }
 
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+#ifdef CONFIG_JBD_DEBUG
+static void ext4_journal_cow_stats(int n, ext4_handle_t *handle)
+{
+	if (!trace_cow_enabled())
+		return;
+	snapshot_debug(n, "COW stats: moved/copied=%d/%d, "
+			 "mapped/bitmap/cached=%d/%d/%d, "
+			 "bitmaps/cleared=%d/%d\n", handle->h_cow_moved,
+			 handle->h_cow_copied, handle->h_cow_ok_mapped,
+			 handle->h_cow_ok_bitmap, handle->h_cow_ok_jh,
+			 handle->h_cow_bitmaps, handle->h_cow_excluded);
+}
+#else
+#define ext4_journal_cow_stats(n, handle)
+#endif
+
+#ifdef CONFIG_EXT4_FS_DEBUG
+void __ext4_journal_trace(int n, const char *fn, const char *caller,
+		ext4_handle_t *handle, int nblocks)
+{
+	struct super_block *sb = handle->h_transaction->t_journal->j_private;
+	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
+	int upper = EXT4_SNAPSHOT_START_TRANS_BLOCKS(handle->h_base_credits);
+	int lower = EXT4_SNAPSHOT_TRANS_BLOCKS(handle->h_user_credits);
+	int final = (nblocks == 0 && handle->h_ref == 1 &&
+		     !IS_COWING(handle));
+
+	switch (snapshot_enable_debug) {
+	case SNAP_INFO:
+		/* trace final journal_stop if any credits have been used */
+		if (final && (handle->h_buffer_credits < upper ||
+			      handle->h_user_credits < handle->h_base_credits))
+			break;
+	case SNAP_WARN:
+		/*
+		 * trace if buffer credits are too low - lower limit is only
+		 * valid if there is an active snapshot and not during COW
+		 */
+		if (handle->h_buffer_credits < lower &&
+		    active_snapshot && !IS_COWING(handle))
+			break;
+	case SNAP_ERR:
+		/* trace if user credits are too low */
+		if (handle->h_user_credits < 0)
+			break;
+	case 0:
+		/* no trace */
+		return;
+
+	case SNAP_DEBUG:
+	default:
+		/* trace all calls */
+		break;
+	}
+
+	snapshot_debug_l(n, IS_COWING(handle), "%s(%d): credits=%d,"
+			" limit=%d/%d, user=%d/%d, ref=%d, caller=%s\n",
+			 fn, nblocks, handle->h_buffer_credits, lower, upper,
+			 handle->h_user_credits, handle->h_base_credits,
+			 handle->h_ref, caller);
+	if (!final)
+		return;
+
+	ext4_journal_cow_stats(n, handle);
+}
+#endif
+#endif
+
 
 
 int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
@@ -225,6 +310,9 @@ int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
 			}
 		}
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	ext4_journal_trace(SNAP_DEBUG, where, handle, -1);
+#endif
 	return err;
 }
 

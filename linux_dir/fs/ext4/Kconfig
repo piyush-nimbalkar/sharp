@@ -282,6 +282,14 @@ config EXT4_FS_SNAPSHOT_JOURNAL_CACHE
 	  and the current transaction in committed, so the COW cache is
 	  invalidated (as it should be).
 
+config EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+	bool "snapshot journaled - trace COW/buffer credits"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	depends on EXT4_FS_DEBUG
+	default y
+	help
+	  Extra debug prints to trace snapshot usage of buffer credits.
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK

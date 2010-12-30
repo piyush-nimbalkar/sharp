@@ -205,18 +205,66 @@ struct ext4_handle_s {
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	h_lockdep_map;
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+
+#ifdef CONFIG_JBD_DEBUG
+	/* Statistics counters: */
+	unsigned int h_cow_moved; /* blocks moved to snapshot */
+	unsigned int h_cow_copied; /* blocks copied to snapshot */
+	unsigned int h_cow_ok_jh; /* blocks already COWed during current
+				     transaction */
+	unsigned int h_cow_ok_bitmap; /* blocks not set in COW bitmap */
+	unsigned int h_cow_ok_mapped;/* blocks already mapped in snapshot */
+	unsigned int h_cow_bitmaps; /* COW bitmaps created */
+	unsigned int h_cow_excluded; /* blocks set in exclude bitmap */
+#endif
+#endif
 };
 
-#ifndef _EXT4_HANDLE_T
+#ifdef _EXT4_HANDLE_T
+#else
 #define _EXT4_HANDLE_T
-typedef struct ext4_handle_s		ext4_handle_t;	/* Ext4 COW handle */
+typedef struct ext4_handle_s ext4_handle_t;	/* Ext4 COW handle */
 #endif
 
 #define IS_COWING(handle) \
 	((ext4_handle_t *)(handle))->h_cowing
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+/*
+ * macros for ext4 to update transaction COW statistics.
+ * when ext4 is compiled as a module with CONFIG_JBD_DEBUG, if the symbol
+ * journal_handle_size doesn't exist or doesn't match the sizeof(handle_t),
+ * then the kernel was compiled wthout CONFIG_JBD_DEBUG or without the ext4
+ * patch and the h_cow_* fields are not allocated in handle objects.
+ */
+#ifdef CONFIG_JBD_DEBUG
+extern const u8 journal_handle_size;
+
+#define trace_cow_enabled()	\
+	(journal_handle_size == sizeof(handle_t))
+
+#define trace_cow_add(handle, name, num)			\
+	do {							\
+		if (trace_cow_enabled())			\
+			((ext4_handle_t *)(handle))->h_cow_##name += (num); \
+	} while (0)
+
+#define trace_cow_inc(handle, name)				\
+	do {							\
+		if (trace_cow_enabled())			\
+			((ext4_handle_t *)(handle))->h_cow_##name++;	\
+	} while (0)
+
+#else
+#define trace_cow_enabled()	0
 #define trace_cow_add(handle, name, num)
 #define trace_cow_inc(handle, name)
+#endif
+#else
+#define trace_cow_add(handle, name, num)
+#define trace_cow_inc(handle, name)
+#endif
 
 #endif
 
@@ -301,7 +349,24 @@ int __ext4_handle_dirty_super(const char *where, unsigned int line,
 	__ext4_handle_dirty_super(__func__, __LINE__, (handle), (sb))
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_TRACE
+#ifdef CONFIG_EXT4_FS_DEBUG
+void __ext4_journal_trace(int debug, const char *fn, const char *caller,
+		ext4_handle_t *handle, int nblocks);
+
+#define ext4_journal_trace(n, caller, handle, nblocks)			\
+	do {								\
+		if ((n) <= snapshot_enable_debug)			\
+			__ext4_journal_trace((n), __func__, (caller),	\
+				(ext4_handle_t *)(handle), (nblocks));	\
+	} while (0)
+
+#else
 #define ext4_journal_trace(n, caller, handle, nblocks)
+#endif
+#else
+#define ext4_journal_trace(n, caller, handle, nblocks)
+#endif
 
 handle_t *__ext4_journal_start(const char *where,
 		struct super_block *sb, int nblocks);
