@@ -196,3 +196,11 @@ config EXT4_FS_SNAPSHOT_BLOCK
 	  argument values 0(=read) and 1(=create) preserve the original
 	  behavior of the function.  The bit field h_cowing in the current
 	  transaction handle is used to prevent COW recursions.
+
+config EXT4_FS_SNAPSHOT_BLOCK_COW
+	bool "snapshot block operation - copy blocks to snapshot"
+	depends on EXT4_FS_SNAPSHOT_BLOCK
+	default y
+	help
+	  Implementation of copying blocks into a snapshot file.
+	  This mechanism is used to copy-on-write metadata blocks to snapshot.

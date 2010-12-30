@@ -654,6 +654,16 @@ static void update_backups(struct super_block *sb,
 		if (err)
           break;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_COW
+		if (ext4_snapshot_has_active(sb))
+			/*
+			 * test_and_cow() expects an uptodate buffer.
+			 * Read the buffer here to suppress the
+			 * "non uptodate buffer" warning.
+			 */
+			bh = sb_bread(sb, group * bpg + blk_off);
+		else
+#endif
 		bh = sb_getblk(sb, group * bpg + blk_off);
 		if (!bh) {
 			err = -EIO;
