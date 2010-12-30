@@ -347,6 +347,14 @@ extern struct buffer_head *read_block_bitmap(struct super_block *sb,
 					     unsigned int block_group);
 
 /* namei.c */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+extern int ext4_inode_list_add(handle_t *handle, struct inode *inode,
+				__u32 *i_next, __le32 *s_last,
+				struct list_head *s_list, const char *name);
+extern int ext4_inode_list_del(handle_t *handle, struct inode *inode,
+				__u32 *i_next, __le32 *s_last,
+				struct list_head *s_list, const char *name);
+#endif
 
 /* inode.c */
 extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,

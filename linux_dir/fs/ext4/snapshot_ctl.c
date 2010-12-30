@@ -389,12 +389,28 @@ static int ext4_snapshot_create(struct inode *inode)
 #endif
 #endif
 	ext4_fsblk_t snapshot_blocks = ext4_blocks_count(sbi->s_es);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	struct list_head *l, *list = &sbi->s_snapshot_list;
+
+	if (!list_empty(list)) {
+		struct inode *last_snapshot =
+			&list_first_entry(list, struct ext4_inode_info,
+					  i_snaplist)->vfs_inode;
+		if (active_snapshot != last_snapshot) {
+			snapshot_debug(1, "failed to add snapshot because last"
+				       " snapshot (%u) is not active\n",
+				       last_snapshot->i_generation);
+			return -EINVAL;
+		}
+	}
+#else
 	if (active_snapshot) {
 		snapshot_debug(1, "failed to add snapshot because active "
 			       "snapshot (%u) has to be deleted first\n",
 			       active_snapshot->i_generation);
 		return -EINVAL;
 	}
+#endif
 
 	/* prevent take of unlinked snapshot file */
 	if (!inode->i_nlink) {
@@ -457,6 +473,31 @@ static int ext4_snapshot_create(struct inode *inode)
 		EXT4_SET_RO_COMPAT_FEATURE(sb,
 			EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	/* add snapshot list reference */
+	if (!igrab(inode)) {
+		err = -EIO;
+		goto out_handle;
+	}
+	/*
+	 * First, the snapshot is added to the in-memory and on-disk list.
+	 * At the end of snapshot_take(), it will become the active snapshot
+	 * in-memory and on-disk.
+	 * Finally, if snapshot_create() or snapshot_take() has failed,
+	 * snapshot_update() will remove it from the in-memory and on-disk list.
+	 */
+	err = ext4_inode_list_add(handle, inode, &NEXT_SNAPSHOT(inode),
+			&sbi->s_es->s_snapshot_list,
+			list, "snapshot");
+	/* add snapshot list reference */
+	if (err) {
+		snapshot_debug(1, "failed to add snapshot (%u) to list\n",
+			       inode->i_generation);
+		iput(inode);
+		goto out_handle;
+	}
+	l = list->next;
+#else
 	lock_super(sb);
 	err = ext4_journal_get_write_access(handle, sbi->s_sbh);
 	sbi->s_es->s_snapshot_list = cpu_to_le32(inode->i_ino);
@@ -465,6 +506,7 @@ static int ext4_snapshot_create(struct inode *inode)
 	unlock_super(sb);
 	if (err)
 		goto out_handle;
+#endif
 
 	err = ext4_mark_inode_dirty(handle, inode);
 	if (err)
@@ -619,10 +661,19 @@ next_snapshot:
 		goto out_handle;
 	}
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL_FIX
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	if (l != list) {
+		ino = list_entry(l, struct ext4_inode_info,
+				i_snaplist)->vfs_inode.i_ino;
+		l = l->next;
+		goto alloc_inode_blocks;
+	}
+#else
 	if (ino == EXT4_ROOT_INO) {
 		ino = inode->i_ino;
 		goto alloc_inode_blocks;
 	}
+#endif
 #endif
 #endif
 
@@ -718,6 +769,10 @@ static char *copy_inode_block_name[COPY_INODE_BLOCKS_NUM] = {
  */
 int ext4_snapshot_take(struct inode *inode)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	struct list_head *list = &EXT4_SB(inode->i_sb)->s_snapshot_list;
+	struct list_head *l = list->next;
+#endif
 	struct super_block *sb = inode->i_sb;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	struct ext4_super_block *es = NULL;
@@ -913,10 +968,19 @@ fix_inode_copy:
 	mark_buffer_dirty(sbh);
 	sync_dirty_buffer(sbh);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	if (l != list) {
+		curr_inode = &list_entry(l, struct ext4_inode_info,
+				       i_snaplist)->vfs_inode;
+		l = l->next;
+		goto copy_inode_blocks;
+	}
+#else
 	if (curr_inode->i_ino == EXT4_ROOT_INO) {
 		curr_inode = inode;
 		goto copy_inode_blocks;
 	}
+#endif
 #endif
 #endif
 
@@ -1111,6 +1175,16 @@ static int ext4_snapshot_remove(struct inode *inode)
 	if (err)
 		goto out_handle;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	err = ext4_inode_list_del(handle, inode, &NEXT_SNAPSHOT(inode),
+			&sbi->s_es->s_snapshot_list,
+			&EXT4_SB(inode->i_sb)->s_snapshot_list,
+			"snapshot");
+	if (err)
+		goto out_handle;
+	/* remove snapshot list reference - taken on snapshot_create() */
+	iput(inode);
+#else
 	lock_super(inode->i_sb);
 	err = ext4_journal_get_write_access(handle, sbi->s_sbh);
 	sbi->s_es->s_snapshot_list = 0;
@@ -1119,6 +1193,7 @@ static int ext4_snapshot_remove(struct inode *inode)
 	unlock_super(inode->i_sb);
 	if (err)
 		goto out_handle;
+#endif
 	/*
 	 * At this point, this snapshot is empty and not on the snapshots list.
 	 * As long as it was on the list it had to have the LIST flag to prevent
@@ -1184,6 +1259,12 @@ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
 	int err, num = 0, snapshot_id = 0;
 	int has_active = 0;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	if (!list_empty(&EXT4_SB(sb)->s_snapshot_list)) {
+		snapshot_debug(1, "warning: snapshots already loaded!\n");
+		return -EINVAL;
+	}
+#endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
 	/* Migrate super block on-disk format */
@@ -1308,8 +1389,15 @@ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
 			has_active = 1;
 		}
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+		list_add_tail(&EXT4_I(inode)->i_snaplist,
+			      &EXT4_SB(sb)->s_snapshot_list);
+		load_ino = NEXT_SNAPSHOT(inode);
+		/* keep snapshot list reference */
+#else
 		iput(inode);
 		break;
+#endif
 	}
 
 	if (err) {
@@ -1336,6 +1424,18 @@ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
  */
 void ext4_snapshot_destroy(struct super_block *sb)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	struct list_head *l, *n;
+	/* iterate safe because we are deleting from list and freeing the
+	 * inodes */
+	list_for_each_safe(l, n, &EXT4_SB(sb)->s_snapshot_list) {
+		struct inode *inode = &list_entry(l, struct ext4_inode_info,
+						  i_snaplist)->vfs_inode;
+		list_del_init(&EXT4_I(inode)->i_snaplist);
+		/* remove snapshot list reference */
+		iput(inode);
+	}
+#endif
 	/* deactivate in-memory active snapshot - cannot fail */
 	(void) ext4_snapshot_set_active(sb, NULL);
 }
@@ -1357,6 +1457,13 @@ int ext4_snapshot_update(struct super_block *sb, int cleanup, int read_only)
 	struct inode *used_by = NULL; /* last non-deleted snapshot found */
 	int deleted;
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	struct inode *inode;
+	struct ext4_inode_info *ei;
+	int found_active = 0;
+	int found_enabled = 0;
+	struct list_head *prev;
+#endif
 	int err = 0;
 
 	BUG_ON(read_only && cleanup);
@@ -1364,6 +1471,75 @@ int ext4_snapshot_update(struct super_block *sb, int cleanup, int read_only)
 		EXT4_I(active_snapshot)->i_flags |=
 			EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_LIST_FL;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	/* iterate safe from oldest snapshot backwards */
+	prev = EXT4_SB(sb)->s_snapshot_list.prev;
+	if (list_empty(prev))
+		return 0;
+
+update_snapshot:
+	ei = list_entry(prev, struct ext4_inode_info, i_snaplist);
+	inode = &ei->vfs_inode;
+	prev = ei->i_snaplist.prev;
+
+	/* all snapshots on the list have the LIST flag */
+	ei->i_flags |= EXT4_SNAPFILE_LIST_FL;
+	/* set the 'No_Dump' flag on all snapshots */
+	ei->i_flags |= EXT4_NODUMP_FL;
+
+	/*
+	 * snapshots later than active (failed take) should be removed.
+	 * no active snapshot means failed first snapshot take.
+	 */
+	if (found_active || !active_snapshot) {
+		if (!read_only)
+			err = ext4_snapshot_remove(inode);
+		goto prev_snapshot;
+	}
+
+	deleted = ei->i_flags & EXT4_SNAPFILE_DELETED_FL;
+	if (!deleted && read_only)
+		/* auto enable snapshots on readonly mount */
+		ext4_snapshot_enable(inode);
+
+	/*
+	 * after completion of a snapshot management operation,
+	 * only the active snapshot can have the ACTIVE flag
+	 */
+	if (inode == active_snapshot) {
+		ei->i_flags |= EXT4_SNAPFILE_ACTIVE_FL;
+		found_active = 1;
+		deleted = 0;
+	} else
+		ei->i_flags &= ~EXT4_SNAPFILE_ACTIVE_FL;
+
+	if (found_enabled)
+		/* snapshot is in use by an older enabled snapshot */
+		ei->i_flags |= EXT4_SNAPFILE_INUSE_FL;
+	else
+		/* snapshot is not in use by older enabled snapshots */
+		ei->i_flags &= ~EXT4_SNAPFILE_INUSE_FL;
+
+	if (cleanup && deleted && !used_by)
+		/* remove permanently unused deleted snapshot */
+		err = ext4_snapshot_remove(inode);
+
+	if (!deleted) {
+		if (!found_active)
+			/* newer snapshots are potentially used by
+			 * this snapshot (when it is enabled) */
+			used_by = inode;
+		if (ei->i_flags & EXT4_SNAPFILE_ENABLED_FL)
+			found_enabled = 1;
+	}
+
+prev_snapshot:
+	if (err)
+		return err;
+	/* update prev snapshot */
+	if (prev != &EXT4_SB(sb)->s_snapshot_list)
+		goto update_snapshot;
+#endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
 	if (!active_snapshot || !cleanup || used_by)

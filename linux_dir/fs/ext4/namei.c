@@ -1970,7 +1970,28 @@ static int empty_dir(struct inode *inode)
  * At filesystem recovery time, we walk this list deleting unlinked
  * inodes and truncating linked inodes in ext4_orphan_cleanup().
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+/*
+ * On errors, ext4_std_error() is called and transaction is aborted.
+ */
 int ext4_orphan_add(handle_t *handle, struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+	/*
+	 * only get the field address from the super block structs
+	 * the content of the field will only be changed under lock_super()
+	 */
+	return ext4_inode_list_add(handle, inode, &NEXT_ORPHAN(inode),
+			&EXT4_SB(sb)->s_es->s_last_orphan,
+			&EXT4_SB(sb)->s_orphan, "orphan");
+}
+
+int ext4_inode_list_add(handle_t *handle, struct inode *inode,
+		__u32 *i_next, __le32 *s_last,
+		struct list_head *s_list, const char *name)
+#else
+int ext4_orphan_add(handle_t *handle, struct inode *inode)
+#endif
 {
 	struct super_block *sb = inode->i_sb;
 	struct ext4_iloc iloc;
@@ -2015,9 +2036,19 @@ int ext4_orphan_add(handle_t *handle, struct inode *inode)
 		(le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count)))
 			goto mem_insert;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	snapshot_debug(4, "add inode %lu to %s list\n",
+			inode->i_ino, name);
+
+	/* Insert this inode at the head of the on-disk inode list... */
+	*i_next = le32_to_cpu(*s_last);
+	*s_last = cpu_to_le32(inode->i_ino);
+#else
+
 	/* Insert this inode at the head of the on-disk orphan list... */
 	NEXT_ORPHAN(inode) = le32_to_cpu(EXT4_SB(sb)->s_es->s_last_orphan);
 	EXT4_SB(sb)->s_es->s_last_orphan = cpu_to_le32(inode->i_ino);
+#endif
 	err = ext4_handle_dirty_metadata(handle, NULL, EXT4_SB(sb)->s_sbh);
 	rc = ext4_mark_iloc_dirty(handle, inode, &iloc);
 	if (!err)
@@ -2033,11 +2064,22 @@ int ext4_orphan_add(handle_t *handle, struct inode *inode)
 	 * anyway on the next recovery. */
 mem_insert:
 	if (!err)
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+		list_add(&EXT4_I(inode)->i_orphan, s_list);
+#else
 		list_add(&EXT4_I(inode)->i_orphan, &EXT4_SB(sb)->s_orphan);
+#endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	snapshot_debug(4, "last_%s will point to inode %lu\n",
+			name, inode->i_ino);
+	snapshot_debug(4, "%s inode %lu will point to inode %d\n",
+			name, inode->i_ino, *i_next);
+#else
 	jbd_debug(4, "superblock will point to %lu\n", inode->i_ino);
 	jbd_debug(4, "orphan inode %lu will point to %d\n",
 			inode->i_ino, NEXT_ORPHAN(inode));
+#endif
 out_unlock:
 	mutex_unlock(&EXT4_SB(sb)->s_orphan_lock);
 	ext4_std_error(inode->i_sb, err);
@@ -2048,7 +2090,28 @@ out_unlock:
  * ext4_orphan_del() removes an unlinked or truncated inode from the list
  * of such inodes stored on disk, because it is finally being cleaned up.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
 int ext4_orphan_del(handle_t *handle, struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+	/*
+	 * only get the field address from the super block structs
+	 * the content of the field will only be changed under lock_super()
+	 */
+	return ext4_inode_list_del(handle, inode, &NEXT_ORPHAN(inode),
+			&EXT4_SB(sb)->s_es->s_last_orphan,
+			&EXT4_SB(sb)->s_orphan, "orphan");
+}
+
+#define NEXT_INODE_OFFSET (((char *)inode)-((char *)i_next))
+#define NEXT_INODE(i_prev) (*(__u32 *)(((char *)i_prev)-NEXT_INODE_OFFSET))
+
+int ext4_inode_list_del(handle_t *handle, struct inode *inode,
+		__u32 *i_next, __le32 *s_last,
+		struct list_head *s_list, const char *name)
+#else
+int ext4_orphan_del(handle_t *handle, struct inode *inode)
+#endif
 {
 	struct list_head *prev;
 	struct ext4_inode_info *ei = EXT4_I(inode);
@@ -2065,11 +2128,20 @@ int ext4_orphan_del(handle_t *handle, struct inode *inode)
 	if (list_empty(&ei->i_orphan))
 		goto out;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	ino_next = *i_next;
+#else
 	ino_next = NEXT_ORPHAN(inode);
+#endif
 	prev = ei->i_orphan.prev;
 	sbi = EXT4_SB(inode->i_sb);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	snapshot_debug(4, "remove inode %lu from %s list\n", inode->i_ino,
+		       name);
+#else
 	jbd_debug(4, "remove inode %lu from orphan list\n", inode->i_ino);
+#endif
 
 	list_del_init(&ei->i_orphan);
 
@@ -2084,30 +2156,53 @@ int ext4_orphan_del(handle_t *handle, struct inode *inode)
 	if (err)
 		goto out_err;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	if (prev == s_list) {
+		snapshot_debug(4, "last_%s will point to inode %lu\n", name,
+				ino_next);
+#else
 	if (prev == &sbi->s_orphan) {
 		jbd_debug(4, "superblock will point to %u\n", ino_next);
+#endif
 		BUFFER_TRACE(sbi->s_sbh, "get_write_access");
 		err = ext4_journal_get_write_access(handle, sbi->s_sbh);
 		if (err)
 			goto out_brelse;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+		*s_last = cpu_to_le32(ino_next);
+#else
 		sbi->s_es->s_last_orphan = cpu_to_le32(ino_next);
+#endif
 		err = ext4_handle_dirty_metadata(handle, NULL, sbi->s_sbh);
 	} else {
 		struct ext4_iloc iloc2;
 		struct inode *i_prev =
 			&list_entry(prev, struct ext4_inode_info, i_orphan)->vfs_inode;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+		snapshot_debug(4, "%s inode %lu will point to inode %lu\n",
+			  name, i_prev->i_ino, ino_next);
+#else
 		jbd_debug(4, "orphan inode %lu will point to %u\n",
 			  i_prev->i_ino, ino_next);
+#endif
 		err = ext4_reserve_inode_write(handle, i_prev, &iloc2);
 		if (err)
 			goto out_brelse;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+		NEXT_INODE(i_prev) = ino_next;
+#else
 		NEXT_ORPHAN(i_prev) = ino_next;
+#endif
 		err = ext4_mark_iloc_dirty(handle, i_prev, &iloc2);
 	}
 	if (err)
 		goto out_brelse;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	*i_next = 0;
+#else
 	NEXT_ORPHAN(inode) = 0;
+#endif
 	err = ext4_mark_iloc_dirty(handle, inode, &iloc);
 
 out_err:

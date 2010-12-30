@@ -1264,6 +1264,9 @@ struct ext4_sb_info {
 	struct ext4_group_info *s_snapshot_group_info;	/* [ sb_bgl_lock ] */
 	struct mutex s_snapshot_mutex;		/* protects 2 fields below: */
 	struct inode *s_active_snapshot;	/* [ s_snapshot_mutex ] */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	struct list_head s_snapshot_list;	/* [ s_snapshot_mutex ] */
+#endif
 #endif
 #ifdef CONFIG_JBD2_DEBUG
 	struct timer_list turn_ro_timer;	/* For turning read-only (crash simulation) */

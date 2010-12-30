@@ -290,6 +290,21 @@ config EXT4_FS_SNAPSHOT_JOURNAL_TRACE
 	help
 	  Extra debug prints to trace snapshot usage of buffer credits.
 
+config EXT4_FS_SNAPSHOT_LIST
+	bool "snapshot list support"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Implementation of multiple incremental snapshots.
+	  Snapshot inodes are chained on a list starting at the super block,
+	  both on-disk and in-memory, similar to the orphan inodes.  We reuse
+	  the orphan inode list functions to manipulate the snapshot list.
+	  Unlink and truncate of snapshot inodes on the list is not allowed,
+	  so an inode can never be chained on both orphan and snapshot lists.
+	  We make use of this fact to overload the in-memory inode field
+	  ext4_inode_info.i_orphan for the chaining of snapshots.
+
+
 config EXT4_FS_SNAPSHOT_CTL_INIT
 	bool "snapshot control - init new snapshot"
 	depends on EXT4_FS_SNAPSHOT_CTL

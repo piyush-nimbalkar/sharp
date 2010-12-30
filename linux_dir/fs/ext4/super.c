@@ -3651,6 +3651,9 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 	mutex_init(&sbi->s_snapshot_mutex);
 	sbi->s_active_snapshot = NULL;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST
+	INIT_LIST_HEAD(&sbi->s_snapshot_list); /* snapshot files */
+#endif
 
 #endif
 	needs_recovery = (es->s_last_orphan != 0 ||
