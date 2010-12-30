@@ -735,7 +735,13 @@ ext4_xattr_block_set(handle_t *handle, struct inode *inode,
 			int offset = (char *)s->here - bs->bh->b_data;
 
 			unlock_buffer(bs->bh);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
+			error = ext4_journal_release_buffer(handle, bs->bh);
+			if (error)
+				goto cleanup;
+#else
 			jbd2_journal_release_buffer(handle, bs->bh);
+#endif
 			if (ce) {
 				mb_cache_entry_release(ce);
 				ce = NULL;

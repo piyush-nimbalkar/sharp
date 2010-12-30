@@ -138,6 +138,41 @@ int __ext4_journal_get_create_access(const char *where, unsigned int line,
 	return err;
 }
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
+int __ext4_journal_release_buffer(const char *where, handle_t *handle,
+				struct buffer_head *bh)
+{
+	int err = 0;
+
+	if (IS_COWING(handle))
+		goto out;
+
+	/*
+	 * Trying to cancel a previous call to get_write_access(), which may
+	 * have resulted in a single COW operation.  We don't need to add
+	 * user credits, but if COW credits are too low we will try to
+	 * extend the transaction to compensate for the buffer credits used
+	 * by the extra COW operation.
+	 */
+	err = ext4_journal_extend(handle, 0);
+	if (err > 0) {
+		/* well, we can't say we didn't try - now lets hope
+		 * we have enough buffer credits to spare */
+		snapshot_debug(1, "%s: warning: couldn't extend transaction "
+				"from %s (credits=%d/%d)\n", __func__,
+				where, handle->h_buffer_credits,
+				((ext4_handle_t *)handle)->h_user_credits);
+		err = 0;
+	}
+	ext4_journal_trace(SNAP_WARN, where, handle, -1);
+out:
+	jbd2_journal_release_buffer(handle, bh);
+	return err;
+}
+
+#endif
+
+
 int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
 				 handle_t *handle, struct inode *inode,
 				 struct buffer_head *bh)

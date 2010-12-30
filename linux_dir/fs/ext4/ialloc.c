@@ -915,8 +915,15 @@ repeat_in_this_group:
 				goto got;
 			}
 			/* we lost it */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
+			err = ext4_journal_release_buffer(handle,
+					 inode_bitmap_bh);
+			if (err)
+				goto fail;
+#else
 			ext4_handle_release_buffer(handle, inode_bitmap_bh);
 			ext4_handle_release_buffer(handle, group_desc_bh);
+#endif
 
 			if (++ino < EXT4_INODES_PER_GROUP(sb))
 				goto repeat_in_this_group;

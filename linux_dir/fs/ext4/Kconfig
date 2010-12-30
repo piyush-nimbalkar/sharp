@@ -241,6 +241,21 @@ config EXT4_FS_SNAPSHOT_JOURNAL_CREDITS
 	  that enough buffer credits are reserved in the running transaction.
 
 
+config EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
+	bool "snapshot journaled - implement journal_release_buffer()"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	default y
+	help
+	  The API journal_release_buffer() is called to cancel a previous call
+	  to journal_get_write_access() and to recall the used buffer credit.
+	  Current implementation of journal_release_buffer() in JBD is empty,
+	  since no buffer credits are used until the buffer is marked dirty.
+	  However, since the resulting snapshot COW operation cannot be undone,
+	  we try to extend the current transaction to compensate for the used
+	  credits of the extra COW operation, so we don't run out of buffer
+	  credits too soon.
+
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK
