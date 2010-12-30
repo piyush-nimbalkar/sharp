@@ -45,6 +45,9 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case EXT4_IOC_GETFLAGS:
 		ext4_get_inode_flags(ei);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		ext4_snapshot_get_flags(ei, filp);
+#endif
 		flags = ei->i_flags & EXT4_FL_USER_VISIBLE;
 		return put_user(flags, (int __user *) arg);
 	case EXT4_IOC_SETFLAGS: {
@@ -53,6 +56,9 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		struct ext4_iloc iloc;
 		unsigned int oldflags;
 		unsigned int jflag;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		unsigned int snapflags = 0;
+#endif
 
 		if (!is_owner_or_cap(inode))
 			return -EACCES;
@@ -72,6 +78,10 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (IS_NOQUOTA(inode))
 			goto flags_out;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		/* update snapshot 'open' flag under i_mutex */
+		ext4_snapshot_get_flags(ei, filp);
+#endif
 		oldflags = ei->i_flags;
 
 		/* The JOURNAL_DATA flag is modifiable only by root */
@@ -96,6 +106,39 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			if (!capable(CAP_SYS_RESOURCE))
 				goto flags_out;
 		}
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		/*
+		 * Snapshot file flags can only be changed by
+		 * the relevant capability and under snapshot_mutex lock.
+		 */
+		snapflags = ((flags | oldflags) & EXT4_FL_SNAPSHOT_MASK);
+		if (snapflags) {
+			if (!capable(CAP_SYS_RESOURCE)) {
+				/* indicate snapshot_mutex not taken */
+				snapflags = 0;
+				goto flags_out;
+			}
+
+			/*
+			 * snapshot_mutex should be held throughout the trio
+			 * snapshot_{set_flags,take,update}().  It must be taken
+			 * before starting the transaction, otherwise
+			 * journal_lock_updates() inside snapshot_take()
+			 * can deadlock:
+			 * A: journal_start()
+			 * A: snapshot_mutex_lock()
+			 * B: journal_start()
+			 * B: snapshot_mutex_lock() (waiting for A)
+			 * A: journal_stop()
+			 * A: snapshot_take() ->
+			 * A: journal_lock_updates() (waiting for B)
+			 */
+			mutex_lock(&EXT4_SB(inode->i_sb)->s_snapshot_mutex);
+		}
+
+#endif
+
 		if (oldflags & EXT4_EXTENTS_FL) {
 			/* We don't support clearning extent flags */
 			if (!(flags & EXT4_EXTENTS_FL)) {
@@ -130,7 +173,13 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 		flags = flags & EXT4_FL_USER_MODIFIABLE;
 		flags |= oldflags & ~EXT4_FL_USER_MODIFIABLE;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		err = ext4_snapshot_set_flags(handle, inode, flags);
+		if (err)
+			goto flags_err;
+#else
 		ei->i_flags = flags;
+#endif
 
 		ext4_set_inode_flags(inode);
 		inode->i_ctime = ext4_current_time(inode);
@@ -145,9 +194,29 @@ flags_err:
 			err = ext4_change_inode_journal_flag(inode, jflag);
 		if (err)
 			goto flags_out;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		if (!(oldflags & EXT4_SNAPFILE_LIST_FL) &&
+				(flags & EXT4_SNAPFILE_LIST_FL))
+			/* setting list flag - take snapshot */
+			err = ext4_snapshot_take(inode);
+#endif
 		if (migrate)
 			err = ext4_ext_migrate(inode);
 flags_out:
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		if (snapflags & EXT4_SNAPFILE_LIST_FL) {
+			/* if clearing list flag, cleanup snapshot list */
+			int ret, cleanup = !(flags & EXT4_SNAPFILE_LIST_FL);
+
+			/* update/cleanup snapshots list even if take failed */
+			ret = ext4_snapshot_update(inode->i_sb, cleanup, 0);
+			if (!err)
+				err = ret;
+		}
+
+		if (snapflags)
+			mutex_unlock(&EXT4_SB(inode->i_sb)->s_snapshot_mutex);
+#endif
 		mutex_unlock(&inode->i_mutex);
 		mnt_drop_write(filp->f_path.mnt);
 		return err;
@@ -172,7 +241,6 @@ flags_out:
 			err = -EFAULT;
 			goto setversion_out;
 		}
-
 		handle = ext4_journal_start(inode, 1);
 		if (IS_ERR(handle)) {
 			err = PTR_ERR(handle);
@@ -223,7 +291,10 @@ setversion_out:
 
 		if (get_user(n_blocks_count, (__u32 __user *)arg))
 			return -EFAULT;
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		/* avoid snapshot_take() in the middle of group_extend() */
+		mutex_lock(&EXT4_SB(sb)->s_snapshot_mutex);
+#endif
 		err = mnt_want_write(filp->f_path.mnt);
 		if (err)
 			return err;
@@ -236,6 +307,9 @@ setversion_out:
 		}
 		if (err == 0)
 			err = err2;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		mutex_unlock(&EXT4_SB(sb)->s_snapshot_mutex);
+#endif
 		mnt_drop_write(filp->f_path.mnt);
 
 		return err;
@@ -297,7 +371,10 @@ mext_out:
 		err = mnt_want_write(filp->f_path.mnt);
 		if (err)
 			return err;
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		/* avoid snapshot_take() in the middle of group_add() */
+		mutex_lock(&EXT4_SB(sb)->s_snapshot_mutex);
+#endif
 		err = ext4_group_add(sb, &input);
 		if (EXT4_SB(sb)->s_journal) {
 			jbd2_journal_lock_updates(EXT4_SB(sb)->s_journal);
@@ -306,6 +383,9 @@ mext_out:
 		}
 		if (err == 0)
 			err = err2;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
+		mutex_unlock(&EXT4_SB(sb)->s_snapshot_mutex);
+#endif
 		mnt_drop_write(filp->f_path.mnt);
 
 		return err;

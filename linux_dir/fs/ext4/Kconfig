@@ -308,3 +308,12 @@ config EXT4_FS_SNAPSHOT_BLOCK_BITMAP
 	  The snapshot copy of the file system block bitmap is called the COW
 	  bitmap and it is used to check if a block was allocated at the time
 	  that the snapshot was taken.
+
+config EXT4_FS_SNAPSHOT_CTL
+	bool "snapshot control"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Snapshot control with chattr -X.
+	  Take/delete snapshot with chattr -X +/-S.
+	  Enable/disable snapshot with chattr -X +/-n.
