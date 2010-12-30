@@ -175,3 +175,12 @@ config EXT4_FS_SNAPSHOT_FILE_HUGE
 	  To map 2^32 logical blocks, 4 triple indirect blocks are used instead
 	  of just one.  The extra 3 triple indirect blocks are stored in-place
 	  of direct blocks, which are not in use by snapshot files.
+
+config EXT4_FS_SNAPSHOT_FILE_OLD
+	bool "snapshot file - migrate old on-disk format"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Snapshot flags and super block field positions have changed.
+	  When old has_snapshot flag is set, copy fields to new position,
+	  clear old flags and fields and set new flags on mount time.

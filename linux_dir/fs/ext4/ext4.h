@@ -452,6 +452,9 @@ struct flex_groups {
 			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
 			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL)
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+#define EXT4_FLAGS_BIG_JOURNAL		0x1000  /* Old big journal */
+#endif
 
 /* Flags that are appropriate for regular files (all but dir-specific ones). */
 #define EXT4_REG_FLMASK (~(EXT4_DIRSYNC_FL | EXT4_TOPDIR_FL))
@@ -994,6 +997,14 @@ struct ext4_inode_info {
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 #define EXT4_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
 #define EXT4_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+#define EXT4_FLAGS_FIX_EXCLUDE		0x0040 /* Bad exclude bitmap */
+#define EXT4_FLAGS_BIG_JOURNAL		0x1000  /* Old big journal */
+#define EXT4_SET_FLAGS(sb, mask) \
+	EXT4_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
+#define EXT4_CLEAR_FLAGS(sb, mask) \
+	EXT4_SB(sb)->s_es->s_flags &= ~cpu_to_le32(mask)
+#endif
 #endif
 
 #define EXT4_SET_FLAGS(sb,mask) \
@@ -1171,7 +1182,16 @@ struct ext4_super_block {
 	__u8	s_last_error_func[32];	/* function where the error happened */
 #define EXT4_S_ERR_END offsetof(struct ext4_super_block, s_mount_opts)
 	__u8	s_mount_opts[64];
-	__le32	s_reserved[112];        /* Padding to the end of the block */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+	__u32	s_reserved[108];	/* Padding to the end of the block */
+	/* old snapshot field positions */
+/*3F0*/	__le32	s_snapshot_list_old;	/* Old snapshot list head */
+	__le32	s_snapshot_r_blocks_old;/* Old reserved for snapshot */
+	__le32	s_snapshot_id_old;	/* Old active snapshot ID */
+	__le32	s_snapshot_inum_old;	/* Old active snapshot inode */
+#else
+	__le32	s_reserved[112];        /* Padding to the end of the bloc */
+#endif
 };
 
 #define EXT4_S_ERR_LEN (EXT4_S_ERR_END - EXT4_S_ERR_START)
@@ -1443,6 +1463,10 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 #define EXT4_FEATURE_COMPAT_EXCLUDE_INODE	0x0080 /* Has exclude inode */
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+#define EXT4_FEATURE_COMPAT_BIG_JOURNAL_OLD	0x1000 /* Old big journal */
+#define EXT4_FEATURE_COMPAT_EXCLUDE_INODE_OLD	0x2000 /* Old exclude inode */
+#endif
 
 #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
 #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
@@ -1475,14 +1499,25 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 					 EXT4_FEATURE_INCOMPAT_64BIT| \
 					 EXT4_FEATURE_INCOMPAT_FLEX_BG)
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
 #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
 					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
 					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
+				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD| \
+				EXT4_FEATURE_RO_COMPAT_IS_SNAPSHOT_OLD| \
+				EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD| \
+				EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD| \
 					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
 					 EXT4_FEATURE_RO_COMPAT_DIR_NLINK | \
 					 EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE | \
 					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR |\
 					 EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
+#else
+#define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
+					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
+					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
+					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR)
+#endif
 #else
 #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
 					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
@@ -2059,6 +2094,12 @@ do {								\
 #define EXT4_FREEBLOCKS_WATERMARK (4 * (percpu_counter_batch * nr_cpu_ids))
 #else
 #define EXT4_FREEBLOCKS_WATERMARK 0
+#endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+#define EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD 0x1000 /* Old has snapshots */
+#define EXT4_FEATURE_RO_COMPAT_IS_SNAPSHOT_OLD	0x2000 /* Old is snapshot */
+#define EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD 0x4000 /* Old fix snapshot */
+#define EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD	0x8000 /* Old fix exclude */
 #endif
 
 static inline void ext4_update_i_disksize(struct inode *inode, loff_t newsize)

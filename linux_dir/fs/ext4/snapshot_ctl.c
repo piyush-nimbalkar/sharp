@@ -122,6 +122,53 @@ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
 	int has_active = 0;
 
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_OLD
+	/* Migrate super block on-disk format */
+	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD) &&
+			!EXT4_HAS_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)) {
+		u64 snapshot_r_blocks;
+
+		/* Copy snapshot fields to new positions */
+		es->s_snapshot_inum = es->s_snapshot_inum_old;
+		active_ino = le32_to_cpu(es->s_snapshot_inum);
+		es->s_snapshot_id = es->s_snapshot_id_old;
+		snapshot_r_blocks = le32_to_cpu(es->s_snapshot_r_blocks_old);
+		es->s_snapshot_r_blocks_count = cpu_to_le64(snapshot_r_blocks);
+		es->s_snapshot_list = es->s_snapshot_list_old;
+		/* Clear old snapshot fields */
+		es->s_snapshot_inum_old = 0;
+		es->s_snapshot_id_old = 0;
+		es->s_snapshot_r_blocks_old = 0;
+		es->s_snapshot_list_old = 0;
+		/* Copy snapshot flags to new positions */
+		EXT4_SET_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT);
+		if (EXT4_HAS_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_COMPAT_EXCLUDE_INODE_OLD))
+			EXT4_SET_COMPAT_FEATURE(sb,
+					EXT4_FEATURE_COMPAT_EXCLUDE_INODE);
+		if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD))
+			EXT4_SET_FLAGS(sb, EXT4_FLAGS_FIX_SNAPSHOT);
+		if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD))
+			EXT4_SET_FLAGS(sb, EXT4_FLAGS_FIX_EXCLUDE);
+		/* Clear old snapshot flags */
+		EXT4_CLEAR_RO_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT_OLD|
+				EXT4_FEATURE_RO_COMPAT_IS_SNAPSHOT_OLD|
+				EXT4_FEATURE_RO_COMPAT_FIX_SNAPSHOT_OLD|
+				EXT4_FEATURE_RO_COMPAT_FIX_EXCLUDE_OLD);
+		/* Clear deprecated big journal flag */
+		EXT4_CLEAR_COMPAT_FEATURE(sb,
+				EXT4_FEATURE_COMPAT_BIG_JOURNAL_OLD);
+		EXT4_CLEAR_FLAGS(sb, EXT4_FLAGS_BIG_JOURNAL);
+		/* Keep old exclude inode flag b/c inode was not moved yet */
+	}
+
+#endif
 	/* init COW bitmap and exclude bitmap cache */
 	err = ext4_snapshot_init_bitmap_cache(sb, !read_only);
 	if (err)
