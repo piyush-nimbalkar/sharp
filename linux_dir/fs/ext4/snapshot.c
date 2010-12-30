@@ -506,6 +506,120 @@ __ext4_snapshot_trace_cow(const char *where, handle_t *handle,
 #define ext4_snapshot_trace_cow(where, handle, sb, inode, bh, block, cmd)
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+/*
+ * The last transaction ID during which the buffer has been COWed is stored in
+ * the b_cow_tid field of the journal_head struct.  If we know that the buffer
+ * was COWed during the current transaction, we don't need to COW it again.
+ * Find the offset of the b_cow_tid field by checking for free space in the
+ * journal_head struct. If there is no free space, don't use cow tid cache.
+ * This method is used so the ext4 module could be loaded without rebuilding
+ * the kernel with modified journal_head struct.
+ * [jbd_lock_bh_state()]
+ */
+
+static int cow_tid_offset;
+
+void init_ext4_snapshot_cow_cache(void)
+{
+	const struct journal_head *jh = NULL;
+	char *pos, *end;
+
+	if (cow_tid_offset)
+		return;
+
+#ifdef CONFIG_64BIT
+	/* check for 32bit padding to 64bit alignment after b_modified */
+	pos = (char *)&jh->b_modified + sizeof(jh->b_modified);
+	end = (char *)&jh->b_frozen_data;
+	if (pos + sizeof(tid_t) <= end)
+		goto found;
+
+#endif
+	/* check for extra jbd2 fields after last jbd field */
+	pos = (char *)&jh->b_cpprev + sizeof(jh->b_cpprev);
+	end = (char *)jh + sizeof(*jh);
+	if (pos + sizeof(tid_t) <= end)
+		goto found;
+
+	/* no free space found - disable cow cache */
+	cow_tid_offset = -1;
+	return;
+found:
+	cow_tid_offset = pos - (char *)NULL;
+#ifdef CONFIG_EXT4_FS_DEBUG
+	cow_cache_offset = cow_tid_offset;
+#endif
+}
+
+#define cow_cache_enabled()	(cow_tid_offset > 0)
+#define jh_cow_tid(jh)			\
+	(*(tid_t *)(((char *)(jh))+cow_tid_offset))
+
+#define test_cow_tid(jh, handle)	\
+	(jh_cow_tid(jh) == (handle)->h_transaction->t_tid)
+#define set_cow_tid(jh, handle)		\
+	(jh_cow_tid(jh) = (handle)->h_transaction->t_tid)
+
+/*
+ * Journal COW cache functions.
+ * a block can only be COWed once per snapshot,
+ * so a block can only be COWed once per transaction,
+ * so a buffer that was COWed in the current transaction,
+ * doesn't need to be COWed.
+ *
+ * Return values:
+ * 1 - block was COWed in current transaction
+ * 0 - block wasn't COWed in current transaction
+ */
+static int
+ext4_snapshot_test_cowed(handle_t *handle, struct buffer_head *bh)
+{
+	struct journal_head *jh;
+
+	if (!cow_cache_enabled())
+		return 0;
+
+	/* check the COW tid in the journal head */
+	if (bh && buffer_jbd(bh)) {
+		jbd_lock_bh_state(bh);
+		jh = bh2jh(bh);
+		if (jh && !test_cow_tid(jh, handle))
+			jh = NULL;
+		jbd_unlock_bh_state(bh);
+		if (jh)
+			/*
+			 * Block was already COWed in the running transaction,
+			 * so we don't need to COW it again.
+			 */
+			return 1;
+	}
+	return 0;
+}
+
+static void
+ext4_snapshot_mark_cowed(handle_t *handle, struct buffer_head *bh)
+{
+	struct journal_head *jh;
+
+	if (!cow_cache_enabled())
+		return;
+
+	if (bh && buffer_jbd(bh)) {
+		jbd_lock_bh_state(bh);
+		jh = bh2jh(bh);
+		if (jh && !test_cow_tid(jh, handle))
+			/*
+			 * this is the first time this block was COWed
+			 * in the running transaction.
+			 * update the COW tid in the journal head
+			 * to mark that this block doesn't need to be COWed.
+			 */
+			set_cow_tid(jh, handle);
+		jbd_unlock_bh_state(bh);
+	}
+}
+#endif
 
 /*
  * Begin COW or move operation.
@@ -588,6 +702,15 @@ int ext4_snapshot_test_and_cow(const char *where, handle_t *handle,
 		return -EPERM;
 	}
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+	/* check if the buffer was COWed in the current transaction */
+	if (ext4_snapshot_test_cowed(handle, bh)) {
+		snapshot_debug_hl(4, "buffer found in COW cache - "
+				  "skip block cow!\n");
+		trace_cow_inc(handle, ok_jh);
+		return 0;
+	}
+#endif
 
 	/* BEGIN COWing */
 	ext4_snapshot_cow_begin(handle);
@@ -684,6 +807,10 @@ int ext4_snapshot_test_and_cow(const char *where, handle_t *handle,
 test_pending_cow:
 
 cowed:
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+	/* mark the buffer COWed in the current transaction */
+	ext4_snapshot_mark_cowed(handle, bh);
+#endif
 out:
 	brelse(sbh);
 	/* END COWing */

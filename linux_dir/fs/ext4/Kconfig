@@ -270,6 +270,18 @@ config EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
 	  Instead, we choose to pay a small performance penalty on these few
 	  COW bitmap operations and wait until they are synced to disk.
 
+config EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+	bool "snapshot journaled - cache last COW tid in journal_head"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	default y
+	help
+	  Cache last COW transaction id in buffer's journal_head.
+	  The cache suppresses COW tests until the transaction in committed. By default, the running transaction is committed every 5 seconds
+	  which implies an average COW cache expiry of 2.5 seconds.
+	  Before taking a new snapshot, the journal is flushed to disk
+	  and the current transaction in committed, so the COW cache is
+	  invalidated (as it should be).
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK

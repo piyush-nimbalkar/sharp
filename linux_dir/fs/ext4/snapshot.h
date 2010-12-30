@@ -303,6 +303,9 @@ extern int ext4_snapshot_get_inode_access(handle_t *handle,
 					   int count, int cmd,
 					   struct inode **prev_snapshot);
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+extern void init_ext4_snapshot_cow_cache(void);
+#endif
 
 /*
  * Snapshot constructor/destructor
@@ -316,6 +319,9 @@ extern void ext4_snapshot_destroy(struct super_block *sb);
 static inline int init_ext4_snapshot(void)
 {
 	init_ext4_snapshot_debug();
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_CACHE
+	init_ext4_snapshot_cow_cache();
+#endif
 	return 0;
 }
 
