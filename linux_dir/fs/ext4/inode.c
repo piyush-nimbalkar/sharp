@@ -963,6 +963,23 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	int depth;
 	int count = 0;
 	ext4_fsblk_t first_block = 0;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+	int read_through = 0;
+	struct inode *prev_snapshot;
+
+	/* read through expected only to snapshot file */
+	BUG_ON(read_through && !ext4_snapshot_file(inode));
+	if (ext4_snapshot_file(inode))
+		/* normal or read through snapshot file access? */
+		read_through = ext4_snapshot_get_inode_access(handle, inode,
+				map->m_lblk, map->m_len, flags, &prev_snapshot);
+
+	if (read_through < 0) {
+		err = read_through;
+		goto out;
+	}
+	err = -EIO;
+#endif
 
 	J_ASSERT(!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)));
 	J_ASSERT(handle != NULL || (flags & EXT4_GET_BLOCKS_CREATE) == 0);
@@ -1012,6 +1029,29 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 		goto got_it;
 	}
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+	/*
+	 * On read of snapshot file, an unmapped block is a peephole to prev
+	 * snapshot.  On read of active snapshot, an unmapped block is a
+	 * peephole to the block device.  On first block write, the peephole
+	 * is filled forever.
+	 */
+	if (read_through && !err) {
+		if (ext4_snapshot_is_active(inode)) {
+			/* active snapshot - read though holes to block
+			 * device */
+#ifdef WARNING_NOT_IMPLEMENTED
+			clear_buffer_new(bh_result);
+			map_bh(bh_result, inode->i_sb,
+			       SNAPSHOT_BLOCK(map->m_lblk));
+#endif
+			err = 1;
+			goto cleanup;
+		} else
+			err = -EIO;
+	}
+
+#endif
 	/* Next simple case - plain lookup or failed read of indirect block */
 	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0 || err == -EIO)
 		goto cleanup;

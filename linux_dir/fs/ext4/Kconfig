@@ -136,3 +136,12 @@ config EXT4_FS_SNAPSHOT_FILE
 	  Ext4 snapshot implementation as a file inside the file system.
 	  Snapshot files are marked with the snapfile flag and have special
 	  read-only address space ops.
+
+config EXT4_FS_SNAPSHOT_FILE_READ
+	bool "snapshot file - read through to block device"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  On active snapshot file page read, the function ext4_get_block()
+	  is called to map the page to a disk block.  If the page is not mapped
+	  in the snapshot file a direct mapping to the block device is returned.

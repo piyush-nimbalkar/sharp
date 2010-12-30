@@ -216,6 +216,13 @@ static inline int ext4_snapshot_get_delete_access(handle_t *handle,
 }
 
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+extern int ext4_snapshot_get_inode_access(handle_t *handle,
+					   struct inode *inode,
+					   ext4_fsblk_t iblock,
+					   int count, int cmd,
+					   struct inode **prev_snapshot);
+#endif
 
 /*
  * Snapshot constructor/destructor
