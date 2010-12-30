@@ -2,14 +2,6 @@ Index: linux_dir/fs/ext4/inode.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/inode.c	2010-12-30 06:45:36.000000000 +0530
 +++ linux_dir/fs/ext4/inode.c	2010-12-30 06:48:35.000000000 +0530
-@@ -326,6 +326,7 @@
- 		double_blocks = (1 << (ptrs_bits * 2));
- 	int n = 0;
- 	int final = 0;
-+
- #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
- 	int tind;
- #endif
 @@ -964,6 +965,14 @@
   * down_read(&EXT4_I(inode)->i_data_sem) if not allocating file system
   * blocks.
@@ -191,12 +183,11 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 ===================================================================
 --- linux_dir.orig/fs/ext4/ext4_jbd2.h	2010-12-30 06:27:32.000000000 +0530
 +++ linux_dir/fs/ext4/ext4_jbd2.h	2010-12-30 06:45:41.000000000 +0530
-@@ -105,6 +105,53 @@
+@@ -105,6 +105,50 @@
  #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
  #endif
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
-+
 +/*
 + * This struct is binary compatible to struct handle_s in include/linux/jbd.h
 + * for building a standalone ext4 module.
@@ -240,8 +231,6 @@ Index: linux_dir/fs/ext4/ext4_jbd2.h
 +#define trace_cow_inc(handle, name)
 +
 +#endif
-+
-+
  #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
  #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
  #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))

@@ -15,23 +15,11 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  Before deleting file blocks in ext4_free_blocks(),
 +	  we call the snapshot API snapshot_get_delete_access(),
 +	  to optionally move the block to the snapshot file.
-Index: linux-2.6.37.1.x/fs/ext4/ext4.h
-===================================================================
---- linux-2.6.37.1.x.orig/fs/ext4/ext4.h	2010-11-26 13:46:22.000000000 +0530
-+++ linux-2.6.37.1.x/fs/ext4/ext4.h	2010-11-26 16:18:22.000000000 +0530
-@@ -1712,6 +1712,7 @@
- extern void ext4_discard_preallocations(struct inode *);
- extern int __init ext4_init_mballoc(void);
- extern void ext4_exit_mballoc(void);
-+
- extern void ext4_free_blocks(handle_t *handle, struct inode *inode,
- 			     struct buffer_head *bh, ext4_fsblk_t block,
- 			     unsigned long count, int flags);
 Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 ===================================================================
 --- linux-2.6.37.1.x.orig/fs/ext4/snapshot.h	2010-11-26 14:58:34.000000000 +0530
 +++ linux-2.6.37.1.x/fs/ext4/snapshot.h	2010-11-26 16:18:22.000000000 +0530
-@@ -159,6 +159,29 @@
+@@ -159,6 +159,28 @@
  }
  
  #endif
@@ -56,7 +44,6 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.h
 +{
 +	return ext4_snapshot_move(handle, inode, block, count, 1);
 +}
-+
 +#endif
  
  /*

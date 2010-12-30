@@ -83,7 +83,7 @@ Index: backup/fs/ext4/inode.c
  	struct inode *inode = mapping->host;
  	int ret, needed_blocks;
  	handle_t *handle;
-@@ -1629,6 +1689,36 @@
+@@ -1629,6 +1689,35 @@
  		goto out;
  	}
  	*pagep = page;
@@ -115,7 +115,6 @@ Index: backup/fs/ext4/inode.c
 +		if (buffer_mapped(bh) && !buffer_jbd(bh))
 +			clear_buffer_mapped(bh);
 +	}
-+
 +#endif
  
  	if (ext4_should_dioread_nolock(inode))

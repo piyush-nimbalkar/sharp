@@ -60,11 +60,10 @@ Index: linux_dir/fs/ext4/Kconfig
 ===================================================================
 --- linux_dir.orig/fs/ext4/Kconfig	2010-12-29 21:40:16.000000000 +0530
 +++ linux_dir/fs/ext4/Kconfig	2010-12-29 21:40:17.000000000 +0530
-@@ -205,6 +205,31 @@
+@@ -205,6 +205,28 @@
  	  Implementation of copying blocks into a snapshot file.
  	  This mechanism is used to copy-on-write metadata blocks to snapshot.
  
-+
 +config EXT4_FS_SNAPSHOT_JOURNAL
 +	bool "snapshot journaled"
 +	depends on EXT4_FS_SNAPSHOT_BLOCK
@@ -72,7 +71,6 @@ Index: linux_dir/fs/ext4/Kconfig
 +	help
 +	  Ext4 snapshot operations are journaled inside the same transaction
 +	  with the file system operation that triggered them.
-+
 +
 +config EXT4_FS_SNAPSHOT_JOURNAL_ERROR
 +	bool "snapshot journaled - record errors in journal"
@@ -87,7 +85,6 @@ Index: linux_dir/fs/ext4/Kconfig
 +	  to prevent data corruption.
 +	  Some places in Ext3 original code don't check for return value of
 +	  JBD functions.  Check for snapshot/journal errors in those places.
-+
 +
  config EXT4_FS_SNAPSHOT_BLOCK_MOVE
  	bool "snapshot block operation - move blocks to snapshot"
@@ -235,16 +232,14 @@ Index: linux_dir/fs/ext4/super.c
  	char nbuf[16];
  	const char *errstr = ext4_decode_error(NULL, err, nbuf);
  
-@@ -323,6 +370,12 @@
+@@ -323,6 +370,10 @@
  	printk(KERN_ERR "%s:%d: aborting transaction: %s in %s\n",
  		caller, line, errstr, err_fn);
  
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
 +	/* record error message in journal super block */
 +	ext4_record_journal_errstr(sb, caller, err_fn, errstr);
-+
 +#endif
-+
  	jbd2_journal_abort_handle(handle);
  }
  
@@ -320,11 +315,10 @@ Index: linux_dir/fs/ext4/super.c
  	va_end(args);
  }
  
-@@ -4219,12 +4302,38 @@
+@@ -4219,11 +4302,38 @@
  	j_errno = jbd2_journal_errno(journal);
  	if (j_errno) {
  		char nbuf[16];
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
 +		char *buf1, *buf2;
 +		unsigned long offset1, offset2;

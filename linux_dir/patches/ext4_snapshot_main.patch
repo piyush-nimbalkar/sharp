@@ -1,4 +1,4 @@
-Index: linux_dir/fs/ext4/balloc.c
+	Index: linux_dir/fs/ext4/balloc.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/balloc.c	2010-12-30 02:24:21.000000000 +0530
 +++ linux_dir/fs/ext4/balloc.c	2010-12-30 02:24:24.000000000 +0530
@@ -231,8 +231,6 @@ Index: linux_dir/fs/ext4/snapshot.c
 +
 +#include "snapshot.h"
 +
-+
-+
 Index: linux_dir/fs/ext4/snapshot_ctl.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
@@ -254,9 +252,7 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +
 +#include "snapshot.h"
 +
-+
 +#define ext4_snapshot_reset_bitmap_cache(sb, init) 0
-+
 +
 +/*
 + * Snapshot constructor/destructor
@@ -300,7 +296,6 @@ Index: linux_dir/fs/ext4/snapshot.h
 +#include <linux/version.h>
 +#include <linux/delay.h>
 +#include "ext4_jbd2.h"
-+
 +
 +#define EXT4_SNAPSHOT_VERSION "ext4 snapshot v1.0.13-rc3 (1-Nov-2010)"
 +
@@ -378,8 +373,6 @@ Index: linux_dir/fs/ext4/snapshot.h
 +#define SNAPSHOT_SET_DISABLED(inode)		\
 +	i_size_write((inode), 0)
 +
-+
-+
 +#define ext4_snapshot_cow(handle, inode, bh, cow) 0
 +
 +#define ext4_snapshot_move(handle, inode, block, num, move) (num)
@@ -387,7 +380,6 @@ Index: linux_dir/fs/ext4/snapshot.h
 +/*
 + * Block access functions
 + */
-+
 +
 +/*
 + * Snapshot constructor/destructor
@@ -407,7 +399,6 @@ Index: linux_dir/fs/ext4/snapshot.h
 +{
 +}
 +
-+
 +/* balloc.c */
 +extern struct buffer_head *read_block_bitmap(struct super_block *sb,
 +					     unsigned int block_group);
@@ -420,14 +411,6 @@ Index: linux_dir/fs/ext4/snapshot.h
 +					   struct ext4_iloc *iloc);
 +
 +/* super.c */
-+
-+
-+
-+
-+
-+
-+
-+
 +#endif	/* _LINUX_EXT4_SNAPSHOT_H */
 Index: linux_dir/fs/ext4/super.c
 ===================================================================
@@ -467,7 +450,6 @@ Index: linux_dir/fs/ext4/super.c
  			   ext4_li_info->li_task == NULL);
  	}
  }
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT
 +static char *journal_mode_string(struct super_block *sb)
 +{
@@ -521,8 +503,8 @@ Index: linux_dir/fs/ext4/super.c
 +			" supported.\n");
 +		goto failed_mount3;
 +	}
- 
 +#endif
+ 
  	/*
  	 * The jbd2_journal_load will have done any necessary log recovery,
  	 * so we can safely mount the rest of the filesystem now.
@@ -536,7 +518,6 @@ Index: linux_dir/fs/ext4/super.c
 +		ext4_error(sb, "load snapshot failed\n");
 +#endif
 +
-+
  	/* determine the minimum size of new large inodes, if present */
  	if (sbi->s_inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
  		sbi->s_want_extra_isize = sizeof(struct ext4_inode) -
@@ -544,7 +525,6 @@ Index: linux_dir/fs/ext4/super.c
  	err = register_filesystem(&ext4_fs_type);
  	if (err)
  		goto out;
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT
 +	err = init_ext4_snapshot();
 +	if (err)
