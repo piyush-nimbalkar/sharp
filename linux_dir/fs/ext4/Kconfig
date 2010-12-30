@@ -290,6 +290,17 @@ config EXT4_FS_SNAPSHOT_JOURNAL_TRACE
 	help
 	  Extra debug prints to trace snapshot usage of buffer credits.
 
+config EXT4_FS_SNAPSHOT_CTL_INIT
+	bool "snapshot control - init new snapshot"
+	depends on EXT4_FS_SNAPSHOT_CTL
+	default y
+	help
+	  On snapshot create, a few special blocks (i.e., the super block and
+	  group descriptors) are pre-allocated and on snapshot take, they are
+	  copied under journal_lock_updates().  This is done to avoid the
+	  recursion that would be caused by COWing these blocks after the
+	  snapshot becomes active.
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK
