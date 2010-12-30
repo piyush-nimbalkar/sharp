@@ -75,7 +75,7 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
  
  /*
   * ext4_snapshot_create() initializes a snapshot file
-@@ -319,6 +363,15 @@
+@@ -319,6 +363,16 @@
  	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
  	struct ext4_inode_info *ei = EXT4_I(inode);
  	int i, err, ret;
@@ -89,6 +89,7 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +	ext4_fsblk_t bmap_blk = 0, imap_blk = 0, inode_blk = 0;
 +#endif
  	ext4_fsblk_t snapshot_blocks = ext4_blocks_count(sbi->s_es);
++
  	if (active_snapshot) {
  		snapshot_debug(1, "failed to add snapshot because active "
 @@ -401,6 +454,142 @@

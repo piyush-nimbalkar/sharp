@@ -33,7 +33,7 @@ Index: linux_dir/fs/ext4/ioctl.c
  		oldflags = ei->i_flags;
  
  		/* The JOURNAL_DATA flag is modifiable only by root */
-@@ -96,6 +106,39 @@
+@@ -96,6 +106,38 @@
  			if (!capable(CAP_SYS_RESOURCE))
  				goto flags_out;
  		}
@@ -69,7 +69,6 @@ Index: linux_dir/fs/ext4/ioctl.c
 +		}
 +
 +#endif
-+
  		if (oldflags & EXT4_EXTENTS_FL) {
  			/* We don't support clearning extent flags */
  			if (!(flags & EXT4_EXTENTS_FL)) {
@@ -117,19 +116,17 @@ Index: linux_dir/fs/ext4/ioctl.c
  		mutex_unlock(&inode->i_mutex);
  		mnt_drop_write(filp->f_path.mnt);
  		return err;
-@@ -172,7 +241,6 @@
+@@ -172,6 +241,6 @@
  			err = -EFAULT;
  			goto setversion_out;
  		}
--
  		handle = ext4_journal_start(inode, 1);
  		if (IS_ERR(handle)) {
  			err = PTR_ERR(handle);
-@@ -223,7 +291,10 @@
+@@ -223,6 +291,10 @@
  
  		if (get_user(n_blocks_count, (__u32 __user *)arg))
  			return -EFAULT;
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
 +		/* avoid snapshot_take() in the middle of group_extend() */
 +		mutex_lock(&EXT4_SB(sb)->s_snapshot_mutex);
@@ -147,11 +144,10 @@ Index: linux_dir/fs/ext4/ioctl.c
  		mnt_drop_write(filp->f_path.mnt);
  
  		return err;
-@@ -297,7 +371,10 @@
+@@ -297,6 +371,10 @@
  		err = mnt_want_write(filp->f_path.mnt);
  		if (err)
  			return err;
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_CTL
 +		/* avoid snapshot_take() in the middle of group_add() */
 +		mutex_lock(&EXT4_SB(sb)->s_snapshot_mutex);
@@ -190,7 +186,7 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/snapshot_ctl.c	2010-12-29 22:08:40.000000000 +0530
 +++ linux_dir/fs/ext4/snapshot_ctl.c	2010-12-29 23:33:01.000000000 +0530
-@@ -116,6 +116,596 @@
+@@ -116,6 +116,590 @@
  #define ext4_snapshot_reset_bitmap_cache(sb, init) 0
  #endif
  
@@ -479,7 +475,6 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +	if (err)
 +		goto out_handle;
 +
-+
 +	snapshot_debug(1, "snapshot (%u) created\n", inode->i_generation);
 +	err = 0;
 +out_handle:
@@ -496,7 +491,6 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 + * allocating snapshot block here the handle will not be used anyway.
 + */
 +static handle_t dummy_handle;
-+
 +
 +/*
 + * ext4_snapshot_take() makes a new snapshot file
@@ -558,7 +552,6 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +	}
 +#endif
 +
-+
 +	/* reset COW bitmap cache */
 +	err = ext4_snapshot_reset_bitmap_cache(sb, 0);
 +	if (err)
@@ -591,7 +584,6 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +	brelse(sbh);
 +	return err;
 +}
-+
 +
 +/*
 + * ext4_snapshot_enable() enables snapshot mount
@@ -780,8 +772,6 @@ Index: linux_dir/fs/ext4/snapshot_ctl.c
 +	}
 +	return err;
 +}
-+
-+
 +
 +#endif
  
