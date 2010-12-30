@@ -18,7 +18,7 @@ Index: backup/fs/ext4/inode.c
  	if (rw == WRITE) {
  		loff_t final_size = offset + count;
  
-@@ -4252,9 +4261,44 @@
+@@ -4252,9 +4261,42 @@
  	.is_partially_uptodate  = block_is_partially_uptodate,
  	.error_remove_page	= generic_error_remove_page,
  };
@@ -49,9 +49,7 @@ Index: backup/fs/ext4/inode.c
 +	.invalidatepage		= ext4_invalidatepage,
 +	.releasepage		= ext4_releasepage,
 +};
-+
 +#endif
-+
  
  void ext4_set_aops(struct inode *inode)
  {
@@ -89,7 +87,7 @@ Index: backup/fs/ext4/ext4.h
   *  Copyright (C) 1991, 1992  Linus Torvalds
   *
 - * Copyright (C) 2008-2010 CTERA Networks
-+* Copyright (C) 2008-2010 CTERA Networks
++ * Copyright (C) 2008-2010 CTERA Networks
   * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
   */
  
@@ -103,7 +101,7 @@ Index: backup/fs/ext4/ext4.h
  #ifdef __KERNEL__
  #include <linux/compat.h>
  #endif
-@@ -369,8 +372,61 @@
+@@ -369,8 +372,60 @@
  #define EXT4_EXTENTS_FL			0x00080000 /* Inode uses extents */
  #define EXT4_EA_INODE_FL	        0x00200000 /* Inode used for large EA */
  #define EXT4_EOFBLOCKS_FL		0x00400000 /* Blocks allocated beyond EOF */
@@ -159,7 +157,6 @@ Index: backup/fs/ext4/ext4.h
 +		EXT4_NODUMP_FL | EXT4_NOATIME_FL | EXT4_COMPRBLK_FL|\
 +		EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
 +		EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL | EXT4_SNAPFILE_FL)
-+
 +#else
 +
  #define EXT4_FL_USER_VISIBLE		0x004BDFFF /* User visible flags */

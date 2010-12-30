@@ -42,12 +42,12 @@ Index: linux_dir/fs/ext4/inode.c
 +				"truncated!\n", inode->i_ino);
 +		return;
 +	}
-+
 +#endif
++
  #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_PERM
  	/* prevent truncate of files on snapshot list */
  	if (ext4_snapshot_list(inode)) {
-@@ -5017,6 +5041,22 @@
+@@ -5017,6 +5041,21 @@
  		;
  	}
  
@@ -64,7 +64,6 @@ Index: linux_dir/fs/ext4/inode.c
 +			i_data[EXT4_TIND_BLOCK + i] = 0;
 +		}
 +	}
-+
 +#endif
 +
  	up_write(&ei->i_data_sem);
@@ -125,11 +124,10 @@ Index: linux_dir/fs/ext4/inode.c
  	if (i_blocks <= 0xffffffffffffULL) {
  		/*
  		 * i_blocks can be represented in a 48 bit variable
-@@ -5556,6 +5623,7 @@
+@@ -5556,6 +5623,6 @@
  			raw_inode->i_uid_high = 0;
  			raw_inode->i_gid_high = 0;
  		}
-+
  	} else {
  		raw_inode->i_uid_low =
  			cpu_to_le16(fs_high2lowuid(inode->i_uid));
@@ -164,7 +162,7 @@ Index: linux_dir/fs/ext4/inode.c
  		raw_inode->i_disk_version =
  			cpu_to_le32(ei->i_next_snapshot_ino);
  		/* dynamic snapshot flags are not stored on-disk */
-@@ -5646,6 +5727,12 @@
+@@ -5646,6 +5727,11 @@
  
  	ext4_update_inode_fsync_trans(handle, inode, 0);
  out_brelse:
@@ -173,7 +171,6 @@ Index: linux_dir/fs/ext4/inode.c
 +				"ino=%lu, i_blocks=%lld is too big",
 +				inode->i_ino, (long long)inode->i_blocks);
 +#endif
-+
  	brelse(bh);
  	ext4_std_error(inode->i_sb, err);
  	return err;

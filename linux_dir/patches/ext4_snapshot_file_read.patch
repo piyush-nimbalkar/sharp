@@ -26,7 +26,7 @@ Index: linux_dir/fs/ext4/inode.c
  
  	J_ASSERT(!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)));
  	J_ASSERT(handle != NULL || (flags & EXT4_GET_BLOCKS_CREATE) == 0);
-@@ -1012,6 +1029,29 @@
+@@ -1012,6 +1029,28 @@
  		goto got_it;
  	}
  
@@ -51,7 +51,6 @@ Index: linux_dir/fs/ext4/inode.c
 +		} else
 +			err = -EIO;
 +	}
-+
 +#endif
  	/* Next simple case - plain lookup or failed read of indirect block */
  	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0 || err == -EIO)

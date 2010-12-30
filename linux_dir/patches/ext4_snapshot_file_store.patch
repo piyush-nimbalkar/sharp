@@ -2,7 +2,7 @@ Index: linux_dir/fs/ext4/inode.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/inode.c	2010-12-30 06:27:36.000000000 +0530
 +++ linux_dir/fs/ext4/inode.c	2010-12-30 06:39:24.000000000 +0530
-@@ -5330,6 +5330,32 @@
+@@ -5330,6 +5330,31 @@
  	 */
  	for (block = 0; block < EXT4_N_BLOCKS; block++)
  		ei->i_data[block] = raw_inode->i_block[block];
@@ -30,7 +30,6 @@ Index: linux_dir/fs/ext4/inode.c
 +		 */
 +		SNAPSHOT_SET_DISABLED(inode);
 +	}
-+
 +#endif
  	INIT_LIST_HEAD(&ei->i_orphan);
  
