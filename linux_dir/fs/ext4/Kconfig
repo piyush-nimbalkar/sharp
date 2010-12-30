@@ -301,6 +301,17 @@ config EXT4_FS_SNAPSHOT_CTL_INIT
 	  recursion that would be caused by COWing these blocks after the
 	  snapshot becomes active.
 
+config EXT4_FS_SNAPSHOT_CTL_FIX
+	bool "snapshot control - fix new snapshot"
+	depends on EXT4_FS_SNAPSHOT_CTL_INIT
+	default y
+	help
+	  On snapshot take, after copying the pre-allocated blocks, some are
+	  fixed to make the snapshot image appear as a valid Ext2 file system.
+	  The has_journal and has_snapshot flags are cleared from the super
+	  block as well as the journal inode and last snapshot inode fields.
+	  All snapshot inodes are cleared (to appear as empty inodes).
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK
