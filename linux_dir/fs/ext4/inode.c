@@ -857,7 +857,12 @@ static int ext4_splice_branch(handle_t *handle, struct inode *inode,
 	 */
 	if (where->bh) {
 		BUFFER_TRACE(where->bh, "get_write_access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+		err = ext4_journal_get_write_access_inode(handle, inode,
+							   where->bh);
+#else
 		err = ext4_journal_get_write_access(handle, where->bh);
+#endif
 		if (err)
 			goto err_out;
 	}
@@ -4398,7 +4403,11 @@ static int ext4_clear_blocks(handle_t *handle, struct inode *inode,
 					    blocks_for_truncate(inode));
 		if (bh) {
 			BUFFER_TRACE(bh, "retaking write access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+			ext4_journal_get_write_access_inode(handle, inode, bh);
+#else
 			ext4_journal_get_write_access(handle, bh);
+#endif
 		}
 	}
 
@@ -4444,7 +4453,12 @@ static void ext4_free_data(handle_t *handle, struct inode *inode,
 
 	if (this_bh) {				/* For indirect block */
 		BUFFER_TRACE(this_bh, "get_write_access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+		err = ext4_journal_get_write_access_inode(handle, inode,
+							   this_bh);
+#else
 		err = ext4_journal_get_write_access(handle, this_bh);
+#endif
 		/* Important: if we can't update the indirect pointers
 		 * to the blocks, we can't free them. */
 		if (err)
@@ -4602,8 +4616,13 @@ static void ext4_free_branches(handle_t *handle, struct inode *inode,
 				 * pointed to by an indirect block: journal it
 				 */
 				BUFFER_TRACE(parent_bh, "get_write_access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_JBD
+				if (!ext4_journal_get_write_access_inode(
+					    handle, inode, parent_bh)){
+#else
 				if (!ext4_journal_get_write_access(handle,
 								   parent_bh)){
+#endif
 					*p = 0;
 					BUFFER_TRACE(parent_bh,
 					"call ext4_handle_dirty_metadata");
