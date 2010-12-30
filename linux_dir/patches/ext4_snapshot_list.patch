@@ -2,7 +2,7 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 ===================================================================
 --- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-12-29 12:40:35.000000000 +0530
 +++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-12-29 12:52:03.000000000 +0530
-@@ -290,6 +290,21 @@
+@@ -290,6 +290,20 @@
  	help
  	  Extra debug prints to trace snapshot usage of buffer credits.
  
@@ -19,7 +19,6 @@ Index: linux-2.6.37.1.x/fs/ext4/Kconfig
 +	  so an inode can never be chained on both orphan and snapshot lists.
 +	  We make use of this fact to overload the in-memory inode field
 +	  ext4_inode_info.i_orphan for the chaining of snapshots.
-+
 +
  config EXT4_FS_SNAPSHOT_CTL_INIT
  	bool "snapshot control - init new snapshot"
@@ -210,7 +209,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
 ===================================================================
 --- linux-2.6.37.1.x.orig/fs/ext4/snapshot_ctl.c	2010-12-29 12:40:35.000000000 +0530
 +++ linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c	2010-12-29 13:01:59.000000000 +0530
-@@ -390,12 +390,28 @@
+@@ -390,12 +390,29 @@
  #endif
  #endif
  	ext4_fsblk_t snapshot_blocks = ext4_blocks_count(sbi->s_es);
@@ -229,6 +228,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot_ctl.c
 +		}
 +	}
 +#else
++
  	if (active_snapshot) {
  		snapshot_debug(1, "failed to add snapshot because active "
  			       "snapshot (%u) has to be deleted first\n",

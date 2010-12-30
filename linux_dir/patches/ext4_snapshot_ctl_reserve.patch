@@ -34,8 +34,8 @@ Index: linux_dir/fs/ext4/balloc.c
 +		 */
 +		root_blocks += snapshot_r_blocks;
 +	}
-+#endif
 +
++#endif
  	if (free_blocks - (nblocks + root_blocks + dirty_blocks) <
  						EXT4_FREEBLOCKS_WATERMARK) {
  		free_blocks  = percpu_counter_sum_positive(fbc);
