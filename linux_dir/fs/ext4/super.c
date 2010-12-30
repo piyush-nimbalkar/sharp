@@ -772,6 +772,12 @@ static void ext4_put_super(struct super_block *sb)
 		vfree(sbi->s_flex_groups);
 	else
 		kfree(sbi->s_flex_groups);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	if (is_vmalloc_addr(sbi->s_group_info))
+		vfree(sbi->s_group_info);
+	else
+		kfree(sbi->s_group_info);
+#endif
 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
 	percpu_counter_destroy(&sbi->s_dirs_counter);
@@ -3087,6 +3093,10 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	const char *descr;
 	int ret = -ENOMEM;
 	int blocksize;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	unsigned long max_groups;
+	size_t size;
+#endif
 	unsigned int db_count;
 	unsigned int i;
 	int needs_recovery, has_huge_files;
@@ -3445,6 +3455,23 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		ext4_msg(sb, KERN_ERR, "group descriptors corrupted!");
 		goto failed_mount2;
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	/* We allocate both existing and potentially added groups */
+	max_groups = (db_count + le16_to_cpu(es->s_reserved_gdt_blocks)) <<
+		EXT4_DESC_PER_BLOCK_BITS(sb);
+	size = max_groups * sizeof(struct ext4_group_info);
+	sbi->s_group_info = kzalloc(size, GFP_KERNEL);
+	if (sbi->s_group_info == NULL) {
+		sbi->s_group_info = vmalloc(size);
+		if (sbi->s_group_info)
+			memset(sbi->s_group_info, 0, size);
+	}
+	if (sbi->s_group_info == NULL) {
+		printk(KERN_ERR "EXT4-fs: not enough memory for "
+				"%lu max groups\n", max_groups);
+		goto failed_mount2;
+	}
+#endif
 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_FLEX_BG))
 		if (!ext4_fill_flex_info(sb)) {
 			ext4_msg(sb, KERN_ERR,
@@ -3498,6 +3525,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 
 	sb->s_root = NULL;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	mutex_init(&sbi->s_snapshot_mutex);
+	sbi->s_active_snapshot = NULL;
+
+#endif
 	needs_recovery = (es->s_last_orphan != 0 ||
 			  EXT4_HAS_INCOMPAT_FEATURE(sb,
 				    EXT4_FEATURE_INCOMPAT_RECOVER));
@@ -3770,6 +3802,14 @@ failed_mount3:
 	percpu_counter_destroy(&sbi->s_dirs_counter);
 	percpu_counter_destroy(&sbi->s_dirtyblocks_counter);
 failed_mount2:
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	if (sbi->s_group_info) {
+		if (is_vmalloc_addr(sbi->s_group_info))
+			vfree(sbi->s_group_info);
+		else
+			kfree(sbi->s_group_info);
+	}
+#endif
 	for (i = 0; i < db_count; i++)
 		brelse(sbi->s_group_desc[i]);
 	kfree(sbi->s_group_desc);

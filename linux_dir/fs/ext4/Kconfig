@@ -127,3 +127,12 @@ config EXT4_FS_SNAPSHOT_HOOKS_DATA
 	  the function ext4_get_block() is called to map the buffer to disk.
 	  We use this hook to call the snapshot API snapshot_get_move_access(),
 	  to optionally move the block to the snapshot file.
+
+config EXT4_FS_SNAPSHOT_FILE
+	bool "snapshot file"
+	depends on EXT4_FS_SNAPSHOT
+	default y
+	help
+	  Ext4 snapshot implementation as a file inside the file system.
+	  Snapshot files are marked with the snapfile flag and have special
+	  read-only address space ops.

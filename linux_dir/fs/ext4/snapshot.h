@@ -251,8 +251,50 @@ extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
 
 /* super.c */
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/* tests if @inode is a snapshot file */
+static inline int ext4_snapshot_file(struct inode *inode)
+{
+	if (!S_ISREG(inode->i_mode))
+		/* a snapshots directory */
+		return 0;
+	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_FL;
+}
+
+/* tests if @inode is on the on-disk snapshot list */
+static inline int ext4_snapshot_list(struct inode *inode)
+{
+	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_LIST_FL;
+}
+#endif
 
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/*
+ * ext4_snapshot_excluded():
+ * Checks if the file should be excluded from snapshot.
+ *
+ * Returns 0 for normal file.
+ * Returns > 0 for 'excluded' file.
+ * Returns < 0 for 'ignored' file (stonger than 'excluded').
+ *
+ * Excluded and ignored file blocks are not moved to snapshot.
+ * Ignored file metadata blocks are not COWed to snapshot.
+ * Excluded file metadata blocks are zeroed in the snapshot file.
+ * XXX: Excluded files code is experimental,
+ *      but ignored files code isn't.
+ */
+static inline int ext4_snapshot_excluded(struct inode *inode)
+{
+	/* directory blocks and global filesystem blocks cannot be 'excluded' */
+	if (!inode || !S_ISREG(inode->i_mode))
+		return 0;
+	/* snapshot files are 'ignored' */
+	if (ext4_snapshot_file(inode))
+		return -1;
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
 /*
@@ -260,6 +302,10 @@ extern ext4_fsblk_t ext4_get_inode_block(struct super_block *sb,
  */
 static inline int ext4_snapshot_should_move_data(struct inode *inode)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	if (ext4_snapshot_excluded(inode))
+		return 0;
+#endif
 	/* when a data block is journaled, it is already COWed as metadata */
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
 		return 0;
@@ -269,6 +315,27 @@ static inline int ext4_snapshot_should_move_data(struct inode *inode)
 }
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/*
+ * tests if the file system has an active snapshot and returns its inode.
+ * active snapshot is only changed under journal_lock_updates(),
+ * so it is safe to use the returned inode during a transaction.
+ */
+static inline struct inode *ext4_snapshot_has_active(struct super_block *sb)
+{
+	return EXT4_SB(sb)->s_active_snapshot;
+}
+
+/*
+ * tests if @inode is the current active snapshot.
+ * active snapshot is only changed under journal_lock_updates(),
+ * so the test result never changes during a transaction.
+ */
+static inline int ext4_snapshot_is_active(struct inode *inode)
+{
+	return (inode == EXT4_SB(inode->i_sb)->s_active_snapshot);
+}
+#endif
 
 
 

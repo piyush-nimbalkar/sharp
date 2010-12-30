@@ -12,7 +12,7 @@
  *
  *  Copyright (C) 1991, 1992  Linus Torvalds
  *
- * Copyright (C) 2008-2010 CTERA Networks
+* Copyright (C) 2008-2010 CTERA Networks
  * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
@@ -32,6 +32,9 @@
 #include <linux/wait.h>
 #include <linux/blockgroup_lock.h>
 #include <linux/percpu_counter.h>
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#include <linux/mutex.h>
+#endif
 #ifdef __KERNEL__
 #include <linux/compat.h>
 #endif
@@ -369,7 +372,60 @@ struct flex_groups {
 #define EXT4_EXTENTS_FL			0x00080000 /* Inode uses extents */
 #define EXT4_EA_INODE_FL	        0x00200000 /* Inode used for large EA */
 #define EXT4_EOFBLOCKS_FL		0x00400000 /* Blocks allocated beyond EOF */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define EXT4_SNAPFILE_LIST_FL		0x00000100 /* snapshot is on list (S) */
+#define EXT4_SNAPFILE_ENABLED_FL	0x00000200 /* snapshot is enabled (n) */
+#define EXT4_SNAPFILE_ACTIVE_FL	0x00000400 /* snapshot is active  (a) */
+#define EXT4_SNAPFILE_INUSE_FL		0x00000800 /* snapshot is in-use  (p) */
+/* snapshot persistent flags */
+#define EXT4_SNAPFILE_FL		0x01000000 /* snapshot file (x) */
+#define EXT4_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted (s) */
+#define EXT4_SNAPFILE_SHRUNK_FL	0x08000000 /* snapshot was shrunk (h) */
+/* more snapshot non-persistent flags */
+#define EXT4_SNAPFILE_OPEN_FL		0x10000000 /* snapshot is mounted (o) */
+#define EXT4_SNAPFILE_TAGGED_FL	0x20000000 /* snapshot is tagged  (t) */
+/* end of snapshot flags */
+#endif
 #define EXT4_RESERVED_FL		0x80000000 /* reserved for ext4 lib */
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/* snapshot flags reserved for user */
+#define EXT4_FL_SNAPSHOT_USER_MASK		\
+	 EXT4_SNAPFILE_TAGGED_FL
+
+/* snapshot flags modifiable by chattr */
+#define EXT4_FL_SNAPSHOT_RW_MASK		\
+	(EXT4_FL_SNAPSHOT_USER_MASK|EXT4_SNAPFILE_FL| \
+	 EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL)
+
+/* snapshot persistent read-only flags */
+#define EXT4_FL_SNAPSHOT_RO_MASK		\
+	 (EXT4_SNAPFILE_DELETED_FL|EXT4_SNAPFILE_SHRUNK_FL)
+
+/* non-persistent snapshot status flags */
+#define EXT4_FL_SNAPSHOT_DYN_MASK		\
+	(EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL| \
+	 EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_INUSE_FL| \
+	 EXT4_SNAPFILE_OPEN_FL|EXT4_SNAPFILE_TAGGED_FL)
+
+/* snapshot flags visible to lsattr */
+#define EXT4_FL_SNAPSHOT_MASK			\
+	(EXT4_FL_SNAPSHOT_DYN_MASK|EXT4_SNAPFILE_FL| \
+	 EXT4_FL_SNAPSHOT_RO_MASK)
+
+/* User visible flags */
+#define EXT4_FL_USER_VISIBLE		(EXT4_FL_SNAPSHOT_MASK|0x0007DFFF)
+/* User modifiable flags */
+#define EXT4_FL_USER_MODIFIABLE	(EXT4_FL_SNAPSHOT_RW_MASK|0x000380FF)
+
+/* Flags that should be inherited by new inodes from their parent. */
+#define EXT4_FL_INHERITED (EXT4_SECRM_FL | EXT4_UNRM_FL | EXT4_COMPR_FL |\
+		EXT4_SYNC_FL | EXT4_IMMUTABLE_FL | EXT4_APPEND_FL |\
+		EXT4_NODUMP_FL | EXT4_NOATIME_FL | EXT4_COMPRBLK_FL|\
+		EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
+		EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL | EXT4_SNAPFILE_FL)
+
+#else
 
 #define EXT4_FL_USER_VISIBLE		0x004BDFFF /* User visible flags */
 #define EXT4_FL_USER_MODIFIABLE		0x004B80FF /* User modifiable flags */
@@ -380,6 +436,7 @@ struct flex_groups {
 			   EXT4_NODUMP_FL | EXT4_NOATIME_FL |\
 			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
 			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL)
+#endif
 
 /* Flags that are appropriate for regular files (all but dir-specific ones). */
 #define EXT4_REG_FLMASK (~(EXT4_DIRSYNC_FL | EXT4_TOPDIR_FL))
@@ -814,7 +871,16 @@ struct ext4_inode_info {
 #endif
 
 	struct list_head i_orphan;	/* unlinked but open inodes */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define i_snaplist i_orphan
+	/*
+	 * In-memory snapshot list overrides i_orphan to link snapshot inodes,
+	 * but unlike the real orphan list, the next snapshot inode number
+	 * is stored in i_next_snapshot_ino and not in i_dtime
+	 */
+	__u32	i_next_snapshot_ino;
 
+#endif
 	/*
 	 * i_disksize keeps track of what the inode size is ON DISK, not
 	 * in memory.  During truncate, i_size is set to the new size by
@@ -905,6 +971,10 @@ struct ext4_inode_info {
 #define EXT2_FLAGS_SIGNED_HASH		0x0001  /* Signed dirhash in use */
 #define EXT2_FLAGS_UNSIGNED_HASH	0x0002  /* Unsigned dirhash in use */
 #define EXT2_FLAGS_TEST_FILESYS		0x0004	/* to test development code */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define EXT4_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
+#define EXT4_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
+#endif
 
 #define EXT4_SET_FLAGS(sb,mask) \
 	EXT4_SB(sb)->s_es->s_flags |= cpu_to_le32(mask)
@@ -1064,11 +1134,9 @@ struct ext4_super_block {
 	__le16  s_reserved_pad;
 	__le64	s_kbytes_written;	/* nr of lifetime kilobytes written */
 	__le32	s_snapshot_inum;	/* Inode number of active snapshot */
-	__le32	s_snapshot_id;		/* sequential ID of active snapshot */
-	__le64	s_snapshot_r_blocks_count; /* reserved blocks for active
-					      snapshot's future use */
-	__le32	s_snapshot_list;	/* inode number of the head of the
-					   on-disk snapshot list */
+	__le32	s_snapshot_id;		/* Sequential ID of active snapshot */
+	__le64	s_snapshot_r_blocks_count; /* Reserved for active snapshot */
+	__le32	s_snapshot_list;	/* start of list of snapshot inodes */
 #define EXT4_S_ERR_START offsetof(struct ext4_super_block, s_error_count)
 	__le32	s_error_count;		/* number of fs errors */
 	__le32	s_first_error_time;	/* first time an error happened */
@@ -1152,6 +1220,11 @@ struct ext4_sb_info {
 	u32 s_max_batch_time;
 	u32 s_min_batch_time;
 	struct block_device *journal_bdev;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+	struct ext4_group_info *s_snapshot_group_info;	/* [ sb_bgl_lock ] */
+	struct mutex s_snapshot_mutex;		/* protects 2 fields below: */
+	struct inode *s_active_snapshot;	/* [ s_snapshot_mutex ] */
+#endif
 #ifdef CONFIG_JBD2_DEBUG
 	struct timer_list turn_ro_timer;	/* For turning read-only (crash simulation) */
 	wait_queue_head_t ro_wait_queue;	/* For people waiting for the fs to go read-only */
@@ -1294,6 +1367,9 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 #endif
 
 #define NEXT_ORPHAN(inode) EXT4_I(inode)->i_dtime
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define NEXT_SNAPSHOT(inode) (EXT4_I(inode)->i_next_snapshot_ino)
+#endif
 
 /*
  * Codes for operating systems
@@ -1344,6 +1420,9 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 #define EXT4_FEATURE_COMPAT_EXT_ATTR		0x0008
 #define EXT4_FEATURE_COMPAT_RESIZE_INODE	0x0010
 #define EXT4_FEATURE_COMPAT_DIR_INDEX		0x0020
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+#define EXT4_FEATURE_COMPAT_EXCLUDE_INODE	0x0080 /* Has exclude inode */
+#endif
 
 #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
 #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
@@ -1375,14 +1454,20 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 					 EXT4_FEATURE_INCOMPAT_EXTENTS| \
 					 EXT4_FEATURE_INCOMPAT_64BIT| \
 					 EXT4_FEATURE_INCOMPAT_FLEX_BG)
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
 #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
 					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
+					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
 					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
 					 EXT4_FEATURE_RO_COMPAT_DIR_NLINK | \
 					 EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE | \
 					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR |\
 					 EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
-
+#else
+#define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
+					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
+					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR)
+#endif
 /*
  * Default values for user and/or group using reserved blocks
  */
@@ -1980,6 +2065,19 @@ struct ext4_group_info {
 	void            *bb_bitmap;
 #endif
 	struct rw_semaphore alloc_sem;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+/*
+	 * Fast cache for location of exclude/COW bitmap blocks.
+	 * Exclude bitmap blocks are allocated offline by mke2fs/tune2fs.
+	 * Location of exclude bitmap blocks is read from exclude inode to
+	 * initialize bg_exclude_bitmap on mount time.
+	 * bg_cow_bitmap is reset to zero on mount time and on every snapshot
+	 * take and initialized lazily on first block group write access.
+	 * bg_cow_bitmap is protected by sb_bgl_lock().
+	 */
+	unsigned long bg_exclude_bitmap;/* Exclude bitmap cache */
+	unsigned long bg_cow_bitmap;	/* COW bitmap cache */
+#endif
 	ext4_grpblk_t	bb_counters[];	/* Nr of free power-of-two-block
 					 * regions, index is order.
 					 * bb_counters[3] = 5 means
