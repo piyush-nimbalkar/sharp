@@ -1,0 +1,480 @@
+diff -Nuarp a/fs/ext4/buffer.c b/fs/ext4/buffer.c
+--- a/fs/ext4/buffer.c	2010-11-11 10:47:14.000000000 +0200
++++ b/fs/ext4/buffer.c	2010-11-11 10:47:13.000000000 +0200
+@@ -65,6 +65,121 @@ static void buffer_io_error(struct buffe
+ 			(unsigned long long)bh->b_blocknr);
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++/*
++ * Tracked read functions.
++ * When reading through a ext4 snapshot file hole to a block device block,
++ * all writes to this block need to wait for completion of the async read.
++ * ext4_snapshot_readpage() always calls ext4_read_full_page() to attach
++ * a buffer head to the page and be aware of tracked reads.
++ * ext4_snapshot_get_block() calls start_buffer_tracked_read() to mark both
++ * snapshot page buffer and block device page buffer.
++ * ext4_snapshot_get_block() calls cancel_buffer_tracked_read() if snapshot
++ * doesn't need to read through to the block device.
++ * ext4_read_full_page() calls submit_buffer_tracked_read() to submit a
++ * tracked async read.
++ * end_buffer_async_read() calls end_buffer_tracked_read() to complete the
++ * tracked read operation.
++ * The only lock needed in all these functions is PageLock on the snapshot page,
++ * which is guarantied in readpage() and verified in ext4_read_full_page().
++ * The block device page buffer doesn't need any lock because the operations
++ * {get|put}_bh_tracked_reader() are atomic.
++ */
++
++/*
++ * start buffer tracked read
++ * called from inside get_block()
++ * get tracked reader ref count on buffer cache entry
++ * and set buffer tracked read flag
++ */
++int start_buffer_tracked_read(struct buffer_head *bh)
++{
++	struct buffer_head *bdev_bh;
++
++	BUG_ON(buffer_tracked_read(bh));
++	BUG_ON(!buffer_mapped(bh));
++
++	/* grab the buffer cache entry */
++	bdev_bh = __getblk(bh->b_bdev, bh->b_blocknr, bh->b_size);
++	if (!bdev_bh)
++		return -EIO;
++
++	BUG_ON(bdev_bh == bh);
++	set_buffer_tracked_read(bh);
++	get_bh_tracked_reader(bdev_bh);
++	put_bh(bdev_bh);
++	return 0;
++}
++
++/*
++ * cancel buffer tracked read
++ * called for tracked read that was started but was not submitted
++ * put tracked reader ref count on buffer cache entry
++ * and clear buffer tracked read flag
++ */
++void cancel_buffer_tracked_read(struct buffer_head *bh)
++{
++	struct buffer_head *bdev_bh;
++
++	BUG_ON(!buffer_tracked_read(bh));
++	BUG_ON(!buffer_mapped(bh));
++
++	/* try to grab the buffer cache entry */
++	bdev_bh = __find_get_block(bh->b_bdev, bh->b_blocknr, bh->b_size);
++	BUG_ON(!bdev_bh || bdev_bh == bh);
++	clear_buffer_tracked_read(bh);
++	clear_buffer_mapped(bh);
++	put_bh_tracked_reader(bdev_bh);
++	put_bh(bdev_bh);
++}
++
++/*
++ * submit buffer tracked read
++ * save a reference to buffer cache entry and submit I/O
++ */
++static int submit_buffer_tracked_read(struct buffer_head *bh)
++{
++	struct buffer_head *bdev_bh;
++	BUG_ON(!buffer_tracked_read(bh));
++	BUG_ON(!buffer_mapped(bh));
++	/* tracked read doesn't work with multiple buffers per page */
++	BUG_ON(bh->b_this_page != bh);
++
++	/*
++	 * Try to grab the buffer cache entry before submitting async read
++	 * because we cannot call blocking function __find_get_block()
++	 * in interrupt context inside end_buffer_tracked_read().
++	 */
++	bdev_bh = __find_get_block(bh->b_bdev, bh->b_blocknr, bh->b_size);
++	BUG_ON(!bdev_bh || bdev_bh == bh);
++	/* override page buffers list with reference to buffer cache entry */
++	bh->b_this_page = bdev_bh;
++	submit_bh(READ, bh);
++	return 0;
++}
++
++/*
++ * end buffer tracked read
++ * complete submitted tracked read
++ */
++static void end_buffer_tracked_read(struct buffer_head *bh)
++{
++	struct buffer_head *bdev_bh = bh->b_this_page;
++
++	BUG_ON(!buffer_tracked_read(bh));
++	BUG_ON(!bdev_bh || bdev_bh == bh);
++	bh->b_this_page = bh;
++	/*
++	 * clear the buffer mapping to make sure
++	 * that get_block() will always be called
++	 */
++	clear_buffer_mapped(bh);
++	clear_buffer_tracked_read(bh);
++	put_bh_tracked_reader(bdev_bh);
++	put_bh(bdev_bh);
++}
++
++#endif
+ /*
+  * I/O completion handler for ext4_read_full_page() - pages
+  * which come unlocked at the end of I/O.
+@@ -79,6 +194,11 @@ static void end_buffer_async_read(struct
+ 
+ 	BUG_ON(!buffer_async_read(bh));
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	if (buffer_tracked_read(bh))
++		end_buffer_tracked_read(bh);
++
++#endif
+ 	page = bh->b_page;
+ 	if (uptodate) {
+ 		set_buffer_uptodate(bh);
+@@ -240,6 +360,10 @@ int ext4_read_full_page(struct page *pa
+ 	 */
+ 	for (i = 0; i < nr; i++) {
+ 		bh = arr[i];
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++		if (buffer_tracked_read(bh))
++			return submit_buffer_tracked_read(bh);
++#endif
+ 		if (buffer_uptodate(bh))
+ 			end_buffer_async_read(bh, 1);
+ 		else
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:14.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:13.000000000 +0200
+@@ -960,6 +960,27 @@ retry:
+ 		err = read_through;
+ 		goto out;
+ 	}
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	if (read_through && !prev_snapshot) {
++		/*
++		 * Possible read through to block device.
++		 * Start tracked read before checking if block is mapped to
++		 * avoid race condition with COW that maps the block after
++		 * we checked if the block is mapped.  If we find that the
++		 * block is mapped, we will cancel the tracked read before
++		 * returning from this function.
++		 */
++		map_bh(bh_result, inode->i_sb, SNAPSHOT_BLOCK(iblock));
++		err = start_buffer_tracked_read(bh_result);
++		if (err < 0) {
++			snapshot_debug(1, "snapshot (%u) failed to start "
++					"tracked read on block (%lld) "
++					"(err=%d)\n", inode->i_generation,
++					(long long)bh_result->b_blocknr, err);
++			goto out;
++		}
++	}
++#endif
+ 	err = -EIO;
+ #endif
+ 
+@@ -1234,6 +1255,12 @@ out_mutex:
+ 
+ 	set_buffer_new(bh_result);
+ got_it:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	/* it's not a hole - cancel tracked read before we deadlock on
++	 * pending COW */
++	if (buffer_tracked_read(bh_result))
++		cancel_buffer_tracked_read(bh_result);
++#endif
+ 	map_bh(bh_result, inode->i_sb, le32_to_cpu(chain[depth-1].key));
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
+ 	/*
+@@ -1282,6 +1309,11 @@ got_it:
+ 	partial = chain + depth - 1;	/* the whole chain */
+ cleanup:
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	/* cancel tracked read on failure to read through active snapshot */
++	if (read_through && err < 0 && buffer_tracked_read(bh_result))
++		cancel_buffer_tracked_read(bh_result);
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_COW
+ 	/* cancel pending COW operation on failure to alloc snapshot block */
+ 	if (create && err < 0 && sbh)
+@@ -2094,6 +2126,92 @@ out_unlock:
+ 	goto out;
+ }
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++static int ext4_snapshot_get_block(struct inode *inode, sector_t iblock,
++			struct buffer_head *bh_result, int create)
++{
++	unsigned long block_group;
++	struct ext4_group_desc *desc;
++	struct ext4_group_info *gi;
++	ext4_fsblk_t bitmap_blk = 0;
++	int err;
++
++	BUG_ON(create != 0);
++	BUG_ON(buffer_tracked_read(bh_result));
++
++	err = ext4_get_blocks_handle(NULL, inode, SNAPSHOT_IBLOCK(iblock),
++					1, bh_result, 0);
++
++	snapshot_debug(4, "ext4_snapshot_get_block(%lld): block = (%lld), "
++			"err = %d\n",
++			(long long)iblock, buffer_mapped(bh_result) ?
++			(long long)bh_result->b_blocknr : 0, err);
++
++	if (err < 0)
++		return err;
++
++	if (!buffer_tracked_read(bh_result))
++		return 0;
++
++	/* check for read through to block bitmap */
++	block_group = SNAPSHOT_BLOCK_GROUP(bh_result->b_blocknr);
++	desc = ext4_get_group_desc(inode->i_sb, block_group, NULL);
++	if (desc)
++		bitmap_blk = le32_to_cpu(desc->bg_block_bitmap);
++	if (bitmap_blk && bitmap_blk == bh_result->b_blocknr) {
++		/* copy fixed block bitmap directly to page buffer */
++		cancel_buffer_tracked_read(bh_result);
++		/* cancel_buffer_tracked_read() clears mapped flag */
++		set_buffer_mapped(bh_result);
++		snapshot_debug(2, "fixing snapshot block bitmap #%lu\n",
++				block_group);
++		/*
++		 * XXX: if we return unmapped buffer, the page will be zeroed
++		 * but if we return mapped to block device and uptodate buffer
++		 * next readpage may read directly from block device without
++		 * fixing block bitmap.  This only affects fsck of snapshots.
++		 */
++		return ext4_snapshot_read_block_bitmap(inode->i_sb,
++				block_group, bh_result);
++	}
++	/* check for read through to exclude bitmap */
++	gi = EXT4_SB(inode->i_sb)->s_group_info + block_group;
++	bitmap_blk = gi->bg_exclude_bitmap;
++	if (bitmap_blk && bitmap_blk == bh_result->b_blocknr) {
++		/* return unmapped buffer to zero out page */
++		cancel_buffer_tracked_read(bh_result);
++		/* cancel_buffer_tracked_read() clears mapped flag */
++		snapshot_debug(2, "zeroing snapshot exclude bitmap #%lu\n",
++				block_group);
++		return 0;
++	}
++
++#ifdef CONFIG_EXT4_FS_DEBUG
++	snapshot_debug(3, "started tracked read: block = [%lu/%lu]\n",
++			SNAPSHOT_BLOCK_TUPLE(bh_result->b_blocknr));
++
++	if (snapshot_enable_test[SNAPTEST_READ]) {
++		err = ext4_snapshot_get_read_access(inode->i_sb,
++				bh_result);
++		if (err) {
++			/* read through access denied */
++			cancel_buffer_tracked_read(bh_result);
++			return err;
++		}
++		/* sleep 1 tunable delay unit */
++		snapshot_test_delay(SNAPTEST_READ);
++	}
++#endif
++	return 0;
++}
++
++static int ext4_snapshot_readpage(struct file *file, struct page *page)
++{
++	/* do read I/O with buffer heads to enable tracked reads */
++	return ext4_read_full_page(page, ext4_snapshot_get_block);
++}
++
++#endif
+ static int ext4_readpage(struct file *file, struct page *page)
+ {
+ 	return mpage_readpage(page, ext4_get_block);
+@@ -2304,8 +2422,12 @@ static int ext4_no_writepage(struct pag
+  * the snapshot COW bitmaps and a few initial blocks copied on snapshot_take().
+  */
+ static const struct address_space_operations ext4_snapfile_aops = {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	.readpage		= ext4_snapshot_readpage,
++#else
+ 	.readpage		= ext4_readpage,
+ 	.readpages		= ext4_readpages,
++#endif
+ 	.writepage		= ext4_no_writepage,
+ 	.bmap			= ext4_bmap,
+ 	.invalidatepage		= ext4_invalidatepage,
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:14.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:13.000000000 +0200
+@@ -428,3 +428,20 @@ config EXT4_FS_SNAPSHOT_RACE_COW
+ 	  If a 'new' buffer entry is found, the reader task waits until the
+ 	  buffer_new flag is cleared and then copies the 'new' buffer directly
+ 	  into the snapshot file page.
++
++config EXT4_FS_SNAPSHOT_RACE_READ
++	bool "snapshot race conditions - tracked reads"
++	depends on EXT4_FS_SNAPSHOT_RACE
++	default y
++	help
++	  Wait for pending read I/O requests to complete.
++	  When a snapshot file readpage reads through to the block device,
++	  the reading task increments the block tracked readers count.
++	  Upon completion of the async read I/O request of the snapshot page,
++	  the tracked readers count is decremented.
++	  When a task is COWing a block with non-zero tracked readers count,
++	  that task has to wait (in msleep(1) loop), until the block's tracked
++	  readers count drops to zero, before the COW operation is completed.
++	  After a pending COW operation has started, reader tasks have to wait
++	  (again, in msleep(1) loop), until the pending COW operation is
++	  completed, so the COWing task cannot be starved by reader tasks.
+diff -Nuarp a/fs/ext4/snapshot.c b/fs/ext4/snapshot.c
+--- a/fs/ext4/snapshot.c	2010-11-11 10:47:14.000000000 +0200
++++ b/fs/ext4/snapshot.c	2010-11-11 10:47:13.000000000 +0200
+@@ -260,6 +260,26 @@ ext4_snapshot_complete_cow(handle_t *ha
+ 		struct buffer_head *sbh, struct buffer_head *bh, int sync)
+ {
+ 	int err = 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	SNAPSHOT_DEBUG_ONCE;
++
++	/* wait for completion of tracked reads before completing COW */
++	while (bh && buffer_tracked_readers_count(bh) > 0) {
++		snapshot_debug_once(2, "waiting for tracked reads: "
++			"block = [%lu/%lu], "
++			"tracked_readers_count = %d...\n",
++			SNAPSHOT_BLOCK_TUPLE(bh->b_blocknr),
++			buffer_tracked_readers_count(bh));
++		/*
++		 * Quote from LVM snapshot pending_complete() function:
++	         * "Check for conflicting reads. This is extremely improbable,
++		 *  so msleep(1) is sufficient and there is no need for a wait
++		 *  queue." (drivers/md/dm-snap.c).
++		 */
++		msleep(1);
++		/* XXX: Should we fail after N retries? */
++	}
++#endif
+ 
+ 	unlock_buffer(sbh);
+ 	if (handle) {
+@@ -1072,3 +1092,46 @@ out:
+ }
+ 
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++/*
++ * ext4_snapshot_get_read_access - get read through access to block device.
++ * Sanity test to verify that the read block is allocated and not excluded.
++ * This test has performance penalty and is only called if SNAPTEST_READ
++ * is enabled.  An attempt to read through to block device of a non allocated
++ * or excluded block may indicate a corrupted filesystem, corrupted snapshot
++ * or corrupted exclude bitmap.  However, it may also be a read-ahead, which
++ * was not implicitly requested by the user, so be sure to disable read-ahead
++ * on block device (blockdev --setra 0 <bdev>) before enabling SNAPTEST_READ.
++ *
++ * Return values:
++ * = 0 - block is allocated and not excluded
++ * < 0 - error (or block is not allocated or excluded)
++ */
++int ext4_snapshot_get_read_access(struct super_block *sb,
++				   struct buffer_head *bh)
++{
++	unsigned long block_group = SNAPSHOT_BLOCK_GROUP(bh->b_blocknr);
++	ext4_grpblk_t bit = SNAPSHOT_BLOCK_GROUP_OFFSET(bh->b_blocknr);
++	struct buffer_head *bitmap_bh;
++	int err = 0;
++
++	if (PageReadahead(bh->b_page))
++		return 0;
++
++	bitmap_bh = read_block_bitmap(sb, block_group);
++	if (!bitmap_bh)
++		return -EIO;
++
++	if (!ext4_test_bit(bit, bitmap_bh->b_data)) {
++		snapshot_debug(2, "warning: attempt to read through to "
++				"non-allocated block [%d/%lu] - read ahead?\n",
++				bit, block_group);
++		brelse(bitmap_bh);
++		return -EIO;
++	}
++
++
++	brelse(bitmap_bh);
++	return err;
++}
++#endif
+diff -Nuarp a/fs/ext4/snapshot.h b/fs/ext4/snapshot.h
+--- a/fs/ext4/snapshot.h	2010-11-11 10:47:14.000000000 +0200
++++ b/fs/ext4/snapshot.h	2010-11-11 10:47:13.000000000 +0200
+@@ -99,9 +99,18 @@
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+ enum ext4_bh_state_bits {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++	BH_Tracked_Read = 30,	/* Buffer read I/O is being tracked,
++							 * to serialize write I/O to block device.
++							 * that is, don't write over this block
++							 * until I finished reading it. */
++#endif
+ 	BH_Partial_Write = 31,	/* Buffer should be read before write */
+ };
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++BUFFER_FNS(Tracked_Read, tracked_read)
++#endif
+ BUFFER_FNS(Partial_Write, partial_write)
+ #endif
+ 
+@@ -307,6 +316,10 @@ static inline int ext4_snapshot_get_del
+ }
+ 
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++extern int ext4_snapshot_get_read_access(struct super_block *sb,
++					  struct buffer_head *bh);
++#endif
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+ extern int ext4_snapshot_get_inode_access(handle_t *handle,
+ 					   struct inode *inode,
+@@ -519,5 +532,35 @@ static inline void ext4_snapshot_test_p
+ }
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_READ
++/*
++ * A tracked reader takes 0x10000 reference counts on the block device buffer.
++ * b_count is not likely to reach 0x10000 by get_bh() calls, but even if it
++ * does, that will only affect the result of buffer_tracked_readers_count().
++ * After 0x10000 subsequent calls to get_bh_tracked_reader(), b_count will
++ * overflow, but that requires 0x10000 parallel readers from 0x10000 different
++ * snapshots and very slow disk I/O...
++ */
++#define BH_TRACKED_READERS_COUNT_SHIFT 16
++
++static inline void get_bh_tracked_reader(struct buffer_head *bdev_bh)
++{
++	atomic_add(1<<BH_TRACKED_READERS_COUNT_SHIFT, &bdev_bh->b_count);
++}
++
++static inline void put_bh_tracked_reader(struct buffer_head *bdev_bh)
++{
++	atomic_sub(1<<BH_TRACKED_READERS_COUNT_SHIFT, &bdev_bh->b_count);
++}
++
++static inline int buffer_tracked_readers_count(struct buffer_head *bdev_bh)
++{
++	return atomic_read(&bdev_bh->b_count)>>BH_TRACKED_READERS_COUNT_SHIFT;
++}
++
++extern int start_buffer_tracked_read(struct buffer_head *bh);
++extern void cancel_buffer_tracked_read(struct buffer_head *bh);
++extern int ext4_read_full_page(struct page *page, get_block_t *get_block);
++#endif
+ 
+ #endif	/* _LINUX_EXT4_SNAPSHOT_H */

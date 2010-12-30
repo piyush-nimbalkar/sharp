@@ -1,0 +1,150 @@
+Index: linux_dir/fs/ext4/inode.c
+===================================================================
+--- linux_dir.orig/fs/ext4/inode.c	2010-12-30 00:08:59.000000000 +0530
++++ linux_dir/fs/ext4/inode.c	2010-12-30 00:11:02.000000000 +0530
+@@ -963,6 +963,23 @@
+ 	int depth;
+ 	int count = 0;
+ 	ext4_fsblk_t first_block = 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
++	int read_through = 0;
++	struct inode *prev_snapshot;
++
++	/* read through expected only to snapshot file */
++	BUG_ON(read_through && !ext4_snapshot_file(inode));
++	if (ext4_snapshot_file(inode))
++		/* normal or read through snapshot file access? */
++		read_through = ext4_snapshot_get_inode_access(handle, inode,
++				map->m_lblk, map->m_len, flags, &prev_snapshot);
++
++	if (read_through < 0) {
++		err = read_through;
++		goto out;
++	}
++	err = -EIO;
++#endif
+ 
+ 	J_ASSERT(!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)));
+ 	J_ASSERT(handle != NULL || (flags & EXT4_GET_BLOCKS_CREATE) == 0);
+@@ -1012,6 +1029,29 @@
+ 		goto got_it;
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
++	/*
++	 * On read of snapshot file, an unmapped block is a peephole to prev
++	 * snapshot.  On read of active snapshot, an unmapped block is a
++	 * peephole to the block device.  On first block write, the peephole
++	 * is filled forever.
++	 */
++	if (read_through && !err) {
++		if (ext4_snapshot_is_active(inode)) {
++			/* active snapshot - read though holes to block
++			 * device */
++#ifdef WARNING_NOT_IMPLEMENTED
++			clear_buffer_new(bh_result);
++			map_bh(bh_result, inode->i_sb,
++			       SNAPSHOT_BLOCK(map->m_lblk));
++#endif
++			err = 1;
++			goto cleanup;
++		} else
++			err = -EIO;
++	}
++
++#endif
+ 	/* Next simple case - plain lookup or failed read of indirect block */
+ 	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0 || err == -EIO)
+ 		goto cleanup;
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-12-30 00:08:59.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-12-30 00:09:19.000000000 +0530
+@@ -136,3 +136,12 @@
+ 	  Ext4 snapshot implementation as a file inside the file system.
+ 	  Snapshot files are marked with the snapfile flag and have special
+ 	  read-only address space ops.
++
++config EXT4_FS_SNAPSHOT_FILE_READ
++	bool "snapshot file - read through to block device"
++	depends on EXT4_FS_SNAPSHOT_FILE
++	default y
++	help
++	  On active snapshot file page read, the function ext4_get_block()
++	  is called to map the page to a disk block.  If the page is not mapped
++	  in the snapshot file a direct mapping to the block device is returned.
+Index: linux_dir/fs/ext4/snapshot.c
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot.c	2010-12-30 00:08:59.000000000 +0530
++++ linux_dir/fs/ext4/snapshot.c	2010-12-30 00:12:10.000000000 +0530
+@@ -15,4 +15,52 @@
+ #include "snapshot.h"
+ 
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
++/*
++ * ext4_snapshot_get_inode_access() - called from ext4_get_blocks_handle()
++ * on snapshot file access.
++ * return value <0 indicates access not granted
++ * return value 0 indicates normal inode access
++ * return value 1 indicates snapshot inode read through access
++ * in which case 'prev_snapshot' is pointed to the previous snapshot
++ * on the list or set to NULL to indicate read through to block device.
++ */
++int ext4_snapshot_get_inode_access(handle_t *handle, struct inode *inode,
++		ext4_fsblk_t iblock, int count, int cmd,
++		struct inode **prev_snapshot)
++{
++	struct ext4_inode_info *ei = EXT4_I(inode);
++	unsigned int flags = ei->i_flags;
++
++	if (!(flags & EXT4_SNAPFILE_LIST_FL))
++		return 0;
++
++	if (cmd) {
++		/* snapshot inode write access */
++		snapshot_debug(1, "snapshot (%u) is read-only"
++				" - write access denied!\n",
++				inode->i_generation);
++		return -EPERM;
++	} else {
++		/* snapshot inode read access */
++		if (iblock < SNAPSHOT_BLOCK_OFFSET)
++			/* snapshot reserved blocks */
++			return 0;
++		/*
++		 * non NULL handle indicates this is test_and_cow()
++		 * checking if snapshot block is mapped
++		 */
++		if (handle)
++			return 0;
++	}
++
++	/*
++	 * Snapshot image read through access: (!cmd && !handle)
++	 * indicates this is ext4_snapshot_readpage()
++	 * calling ext4_snapshot_get_block()
++	 */
++	*prev_snapshot = NULL;
++	return ext4_snapshot_is_active(inode) ? 1 : 0;
++}
++#endif
+ 
+Index: linux_dir/fs/ext4/snapshot.h
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot.h	2010-12-30 00:08:59.000000000 +0530
++++ linux_dir/fs/ext4/snapshot.h	2010-12-30 00:09:19.000000000 +0530
+@@ -216,6 +216,13 @@
+ }
+ 
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
++extern int ext4_snapshot_get_inode_access(handle_t *handle,
++					   struct inode *inode,
++					   ext4_fsblk_t iblock,
++					   int count, int cmd,
++					   struct inode **prev_snapshot);
++#endif
+ 
+ /*
+  * Snapshot constructor/destructor

@@ -1,0 +1,713 @@
+Index: backup/fs/ext4/inode.c
+===================================================================
+--- backup.orig/fs/ext4/inode.c	2010-12-02 11:32:45.000000000 +0530
++++ backup/fs/ext4/inode.c	2010-12-02 11:32:54.000000000 +0530
+@@ -3837,6 +3837,15 @@
+ 	size_t count = iov_length(iov, nr_segs);
+ 	int retries = 0;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	/*
++	 * snapshot support for direct I/O is not implemented,
++	 * so direct I/O is disabled when there are active snapshots.
++	 */
++	if (ext4_snapshot_has_active(inode->i_sb))
++		return -EOPNOTSUPP;
++
++#endif
+ 	if (rw == WRITE) {
+ 		loff_t final_size = offset + count;
+ 
+@@ -4252,9 +4261,44 @@
+ 	.is_partially_uptodate  = block_is_partially_uptodate,
+ 	.error_remove_page	= generic_error_remove_page,
+ };
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++static int ext4_no_writepage(struct page *page,
++				struct writeback_control *wbc)
++{
++	unlock_page(page);
++	return -EIO;
++}
++
++/*
++ * Snapshot file page operations:
++ * always readpage (by page) with buffer tracked read.
++ * user cannot writepage or direct_IO to a snapshot file.
++ *
++ * snapshot file pages are written to disk after a COW operation in "ordered"
++ * mode and are never changed after that again, so there is no data corruption
++ * risk when using "ordered" mode on snapshot files.
++ * some snapshot data pages are written to disk by sync_dirty_buffer(), namely
++ * the snapshot COW bitmaps and a few initial blocks copied on snapshot_take().
++ */
++static const struct address_space_operations ext4_snapfile_aops = {
++	.readpage		= ext4_readpage,
++	.readpages		= ext4_readpages,
++	.writepage		= ext4_no_writepage,
++	.bmap			= ext4_bmap,
++	.invalidatepage		= ext4_invalidatepage,
++	.releasepage		= ext4_releasepage,
++};
++
++#endif
++
+ 
+ void ext4_set_aops(struct inode *inode)
+ {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	if (ext4_snapshot_file(inode))
++		inode->i_mapping->a_ops = &ext4_snapfile_aops;
++	else
++#endif
+ 	if (ext4_should_order_data(inode) &&
+ 		test_opt(inode->i_sb, DELALLOC))
+ 		inode->i_mapping->a_ops = &ext4_da_aops;
+Index: backup/fs/ext4/Kconfig
+===================================================================
+--- backup.orig/fs/ext4/Kconfig	2010-12-02 11:17:10.000000000 +0530
++++ backup/fs/ext4/Kconfig	2010-12-02 11:32:54.000000000 +0530
+@@ -127,3 +127,12 @@
+ 	  the function ext4_get_block() is called to map the buffer to disk.
+ 	  We use this hook to call the snapshot API snapshot_get_move_access(),
+ 	  to optionally move the block to the snapshot file.
++
++config EXT4_FS_SNAPSHOT_FILE
++	bool "snapshot file"
++	depends on EXT4_FS_SNAPSHOT
++	default y
++	help
++	  Ext4 snapshot implementation as a file inside the file system.
++	  Snapshot files are marked with the snapfile flag and have special
++	  read-only address space ops.
+Index: backup/fs/ext4/ext4.h
+===================================================================
+--- backup.orig/fs/ext4/ext4.h	2010-12-02 11:16:58.000000000 +0530
++++ backup/fs/ext4/ext4.h	2010-12-02 11:52:41.000000000 +0530
+@@ -12,7 +12,7 @@
+  *
+  *  Copyright (C) 1991, 1992  Linus Torvalds
+  *
+- * Copyright (C) 2008-2010 CTERA Networks
++* Copyright (C) 2008-2010 CTERA Networks
+  * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
+  */
+ 
+@@ -32,6 +32,9 @@
+ #include <linux/wait.h>
+ #include <linux/blockgroup_lock.h>
+ #include <linux/percpu_counter.h>
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#include <linux/mutex.h>
++#endif
+ #ifdef __KERNEL__
+ #include <linux/compat.h>
+ #endif
+@@ -369,8 +372,61 @@
+ #define EXT4_EXTENTS_FL			0x00080000 /* Inode uses extents */
+ #define EXT4_EA_INODE_FL	        0x00200000 /* Inode used for large EA */
+ #define EXT4_EOFBLOCKS_FL		0x00400000 /* Blocks allocated beyond EOF */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#define EXT4_SNAPFILE_LIST_FL		0x00000100 /* snapshot is on list (S) */
++#define EXT4_SNAPFILE_ENABLED_FL	0x00000200 /* snapshot is enabled (n) */
++#define EXT4_SNAPFILE_ACTIVE_FL	0x00000400 /* snapshot is active  (a) */
++#define EXT4_SNAPFILE_INUSE_FL		0x00000800 /* snapshot is in-use  (p) */
++/* snapshot persistent flags */
++#define EXT4_SNAPFILE_FL		0x01000000 /* snapshot file (x) */
++#define EXT4_SNAPFILE_DELETED_FL	0x04000000 /* snapshot is deleted (s) */
++#define EXT4_SNAPFILE_SHRUNK_FL	0x08000000 /* snapshot was shrunk (h) */
++/* more snapshot non-persistent flags */
++#define EXT4_SNAPFILE_OPEN_FL		0x10000000 /* snapshot is mounted (o) */
++#define EXT4_SNAPFILE_TAGGED_FL	0x20000000 /* snapshot is tagged  (t) */
++/* end of snapshot flags */
++#endif
+ #define EXT4_RESERVED_FL		0x80000000 /* reserved for ext4 lib */
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/* snapshot flags reserved for user */
++#define EXT4_FL_SNAPSHOT_USER_MASK		\
++	 EXT4_SNAPFILE_TAGGED_FL
++
++/* snapshot flags modifiable by chattr */
++#define EXT4_FL_SNAPSHOT_RW_MASK		\
++	(EXT4_FL_SNAPSHOT_USER_MASK|EXT4_SNAPFILE_FL| \
++	 EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL)
++
++/* snapshot persistent read-only flags */
++#define EXT4_FL_SNAPSHOT_RO_MASK		\
++	 (EXT4_SNAPFILE_DELETED_FL|EXT4_SNAPFILE_SHRUNK_FL)
++
++/* non-persistent snapshot status flags */
++#define EXT4_FL_SNAPSHOT_DYN_MASK		\
++	(EXT4_SNAPFILE_LIST_FL|EXT4_SNAPFILE_ENABLED_FL| \
++	 EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_INUSE_FL| \
++	 EXT4_SNAPFILE_OPEN_FL|EXT4_SNAPFILE_TAGGED_FL)
++
++/* snapshot flags visible to lsattr */
++#define EXT4_FL_SNAPSHOT_MASK			\
++	(EXT4_FL_SNAPSHOT_DYN_MASK|EXT4_SNAPFILE_FL| \
++	 EXT4_FL_SNAPSHOT_RO_MASK)
++
++/* User visible flags */
++#define EXT4_FL_USER_VISIBLE		(EXT4_FL_SNAPSHOT_MASK|0x0007DFFF)
++/* User modifiable flags */
++#define EXT4_FL_USER_MODIFIABLE	(EXT4_FL_SNAPSHOT_RW_MASK|0x000380FF)
++
++/* Flags that should be inherited by new inodes from their parent. */
++#define EXT4_FL_INHERITED (EXT4_SECRM_FL | EXT4_UNRM_FL | EXT4_COMPR_FL |\
++		EXT4_SYNC_FL | EXT4_IMMUTABLE_FL | EXT4_APPEND_FL |\
++		EXT4_NODUMP_FL | EXT4_NOATIME_FL | EXT4_COMPRBLK_FL|\
++		EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
++		EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL | EXT4_SNAPFILE_FL)
++
++#else
++
+ #define EXT4_FL_USER_VISIBLE		0x004BDFFF /* User visible flags */
+ #define EXT4_FL_USER_MODIFIABLE		0x004B80FF /* User modifiable flags */
+ 
+@@ -380,6 +436,7 @@
+ 			   EXT4_NODUMP_FL | EXT4_NOATIME_FL |\
+ 			   EXT4_NOCOMPR_FL | EXT4_JOURNAL_DATA_FL |\
+ 			   EXT4_NOTAIL_FL | EXT4_DIRSYNC_FL)
++#endif
+ 
+ /* Flags that are appropriate for regular files (all but dir-specific ones). */
+ #define EXT4_REG_FLMASK (~(EXT4_DIRSYNC_FL | EXT4_TOPDIR_FL))
+@@ -814,7 +871,16 @@
+ #endif
+ 
+ 	struct list_head i_orphan;	/* unlinked but open inodes */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#define i_snaplist i_orphan
++	/*
++	 * In-memory snapshot list overrides i_orphan to link snapshot inodes,
++	 * but unlike the real orphan list, the next snapshot inode number
++	 * is stored in i_next_snapshot_ino and not in i_dtime
++	 */
++	__u32	i_next_snapshot_ino;
+ 
++#endif
+ 	/*
+ 	 * i_disksize keeps track of what the inode size is ON DISK, not
+ 	 * in memory.  During truncate, i_size is set to the new size by
+@@ -905,6 +971,10 @@
+ #define EXT2_FLAGS_SIGNED_HASH		0x0001  /* Signed dirhash in use */
+ #define EXT2_FLAGS_UNSIGNED_HASH	0x0002  /* Unsigned dirhash in use */
+ #define EXT2_FLAGS_TEST_FILESYS		0x0004	/* to test development code */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#define EXT4_FLAGS_IS_SNAPSHOT		0x0010 /* Is a snapshot image */
++#define EXT4_FLAGS_FIX_SNAPSHOT	0x0020 /* Corrupted snapshot */
++#endif
+ 
+ /*
+  * Mount flags
+@@ -1059,11 +1129,9 @@
+ 	__le16  s_reserved_pad;
+ 	__le64	s_kbytes_written;	/* nr of lifetime kilobytes written */
+ 	__le32	s_snapshot_inum;	/* Inode number of active snapshot */
+-	__le32	s_snapshot_id;		/* sequential ID of active snapshot */
+-	__le64	s_snapshot_r_blocks_count; /* reserved blocks for active
+-					      snapshot's future use */
+-	__le32	s_snapshot_list;	/* inode number of the head of the
+-					   on-disk snapshot list */
++	__le32	s_snapshot_id;		/* Sequential ID of active snapshot */
++	__le64	s_snapshot_r_blocks_count; /* Reserved for active snapshot */
++	__le32	s_snapshot_list;	/* start of list of snapshot inodes */
+ #define EXT4_S_ERR_START offsetof(struct ext4_super_block, s_error_count)
+ 	__le32	s_error_count;		/* number of fs errors */
+ 	__le32	s_first_error_time;	/* first time an error happened */
+@@ -1147,6 +1215,11 @@
+ 	u32 s_max_batch_time;
+ 	u32 s_min_batch_time;
+ 	struct block_device *journal_bdev;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	struct ext4_group_info *s_snapshot_group_info;	/* [ sb_bgl_lock ] */
++	struct mutex s_snapshot_mutex;		/* protects 2 fields below: */
++	struct inode *s_active_snapshot;	/* [ s_snapshot_mutex ] */
++#endif
+ #ifdef CONFIG_JBD2_DEBUG
+ 	struct timer_list turn_ro_timer;	/* For turning read-only (crash simulation) */
+ 	wait_queue_head_t ro_wait_queue;	/* For people waiting for the fs to go read-only */
+@@ -1289,6 +1362,9 @@
+ #endif
+ 
+ #define NEXT_ORPHAN(inode) EXT4_I(inode)->i_dtime
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#define NEXT_SNAPSHOT(inode) (EXT4_I(inode)->i_next_snapshot_ino)
++#endif
+ 
+ /*
+  * Codes for operating systems
+@@ -1339,6 +1415,9 @@
+ #define EXT4_FEATURE_COMPAT_EXT_ATTR		0x0008
+ #define EXT4_FEATURE_COMPAT_RESIZE_INODE	0x0010
+ #define EXT4_FEATURE_COMPAT_DIR_INDEX		0x0020
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++#define EXT4_FEATURE_COMPAT_EXCLUDE_INODE	0x0080 /* Has exclude inode */
++#endif
+ 
+ #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
+ #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
+@@ -1370,14 +1449,20 @@
+ 					 EXT4_FEATURE_INCOMPAT_EXTENTS| \
+ 					 EXT4_FEATURE_INCOMPAT_64BIT| \
+ 					 EXT4_FEATURE_INCOMPAT_FLEX_BG)
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
+ #define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
+ 					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
++					 EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT| \
+ 					 EXT4_FEATURE_RO_COMPAT_GDT_CSUM| \
+ 					 EXT4_FEATURE_RO_COMPAT_DIR_NLINK | \
+ 					 EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE | \
+ 					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR |\
+ 					 EXT4_FEATURE_RO_COMPAT_HUGE_FILE)
+-
++#else
++#define EXT4_FEATURE_RO_COMPAT_SUPP	(EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER| \
++					 EXT4_FEATURE_RO_COMPAT_LARGE_FILE| \
++					 EXT4_FEATURE_RO_COMPAT_BTREE_DIR)
++#endif
+ /*
+  * Default values for user and/or group using reserved blocks
+  */
+@@ -1975,6 +2060,19 @@
+ 	void            *bb_bitmap;
+ #endif
+ 	struct rw_semaphore alloc_sem;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/*
++	 * Fast cache for location of exclude/COW bitmap blocks.
++	 * Exclude bitmap blocks are allocated offline by mke2fs/tune2fs.
++	 * Location of exclude bitmap blocks is read from exclude inode to
++	 * initialize bg_exclude_bitmap on mount time.
++	 * bg_cow_bitmap is reset to zero on mount time and on every snapshot
++	 * take and initialized lazily on first block group write access.
++	 * bg_cow_bitmap is protected by sb_bgl_lock().
++	 */
++	unsigned long bg_exclude_bitmap;/* Exclude bitmap cache */
++	unsigned long bg_cow_bitmap;	/* COW bitmap cache */
++#endif
+ 	ext4_grpblk_t	bb_counters[];	/* Nr of free power-of-two-block
+ 					 * regions, index is order.
+ 					 * bb_counters[3] = 5 means
+Index: backup/fs/ext4/snapshot_ctl.c
+===================================================================
+--- backup.orig/fs/ext4/snapshot_ctl.c	2010-12-02 09:51:38.000000000 +0530
++++ backup/fs/ext4/snapshot_ctl.c	2010-12-02 11:32:54.000000000 +0530
+@@ -14,6 +14,81 @@
+ 
+ #include "snapshot.h"
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/*
++ * General snapshot locking semantics:
++ *
++ * The snapshot_mutex:
++ * -------------------
++ * The majority of the code in the snapshot_{ctl,debug}.c files is called from
++ * very few entry points in the code:
++ * 1. {init,exit}_ext4_fs() - calls {init,exit}_ext4_snapshot() under BGL.
++ * 2. ext4_{fill,put}_super() - calls ext4_snapshot_{load,destroy}() under
++ *    VFS sb_lock, while f/s is not accessible to users.
++ * 3. ext4_ioctl() - only place that takes snapshot_mutex (after i_mutex)
++ *    and only entry point to snapshot control functions below.
++ *
++ * From the rules above it follows that all fields accessed inside
++ * snapshot_{ctl,debug}.c are protected by one of the following:
++ * - snapshot_mutex during snapshot control operations.
++ * - VFS sb_lock during f/s mount/umount time.
++ * - Big kernel lock during module init time.
++ * Needless to say, either of the above is sufficient.
++ * So if a field is accessed only inside snapshot_*.c it should be safe.
++ *
++ * The transaction handle:
++ * -----------------------
++ * Snapshot COW code (in snapshot.c) is called from block access hooks during a
++ * transaction (with a transaction handle). This guaranties safe read access to
++ * s_active_snapshot, without taking snapshot_mutex, because the latter is only
++ * changed under journal_lock_updates() (while no transaction handles exist).
++ *
++ * The transaction handle is a per task struct, so there is no need to protect
++ * fields on that struct (i.e. h_cowing, h_cow_*).
++ */
++
++/*
++ * ext4_snapshot_set_active - set the current active snapshot
++ * First, if current active snapshot exists, it is deactivated.
++ * Then, if @inode is not NULL, the active snapshot is set to @inode.
++ *
++ * Called from ext4_snapshot_take() and ext4_snapshot_update() under
++ * journal_lock_updates() and snapshot_mutex.
++ * Called from ext4_snapshot_{load,destroy}() under sb_lock.
++ *
++ * Returns 0 on success and <0 on error.
++ */
++static int ext4_snapshot_set_active(struct super_block *sb,
++		struct inode *inode)
++{
++	struct inode *old = EXT4_SB(sb)->s_active_snapshot;
++
++	if (old == inode)
++		return 0;
++
++	/* add new active snapshot reference */
++	if (inode && !igrab(inode))
++		return -EIO;
++
++	/* point of no return - replace old with new snapshot */
++	if (old) {
++		EXT4_I(old)->i_flags &= ~EXT4_SNAPFILE_ACTIVE_FL;
++		snapshot_debug(1, "snapshot (%u) deactivated\n",
++			       old->i_generation);
++		/* remove old active snapshot reference */
++		iput(old);
++	}
++	if (inode) {
++		EXT4_I(inode)->i_flags |=
++			EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_LIST_FL;
++		snapshot_debug(1, "snapshot (%u) activated\n",
++			       inode->i_generation);
++	}
++	EXT4_SB(sb)->s_active_snapshot = inode;
++
++	return 0;
++}
++#endif
+ 
+ #define ext4_snapshot_reset_bitmap_cache(sb, init) 0
+ 
+@@ -26,6 +101,156 @@
+ #define ext4_snapshot_init_bitmap_cache(sb, create)	\
+ 		ext4_snapshot_reset_bitmap_cache(sb, 1)
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/*
++ * ext4_snapshot_load - load the on-disk snapshot list to memory.
++ * Start with last (or active) snapshot and continue to older snapshots.
++ * If snapshot load fails before active snapshot, force read-only mount.
++ * If snapshot load fails after active snapshot, allow read-write mount.
++ * Called from ext4_fill_super() under sb_lock during mount time.
++ *
++ * Return values:
++ * = 0 - on-disk snapshot list is empty or active snapshot loaded
++ * < 0 - error loading active snapshot
++ */
++int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
++		int read_only)
++{
++	__u32 active_ino = le32_to_cpu(es->s_snapshot_inum);
++	__u32 load_ino = le32_to_cpu(es->s_snapshot_list);
++	int err, num = 0, snapshot_id = 0;
++	int has_active = 0;
++
++
++	/* init COW bitmap and exclude bitmap cache */
++	err = ext4_snapshot_init_bitmap_cache(sb, !read_only);
++	if (err)
++		return err;
++
++	if (!load_ino && active_ino) {
++		/* snapshots list is empty and active snapshot exists */
++		if (!read_only)
++			/* reset list head to active snapshot */
++			es->s_snapshot_list = es->s_snapshot_inum;
++		/* try to load active snapshot */
++		load_ino = le32_to_cpu(es->s_snapshot_inum);
++	}
++
++	if (!EXT4_HAS_RO_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)) {
++		/*
++		 * When mounting an ext3 formatted volume as ext4, the
++		 * HAS_SNAPSHOT flag is set on first snapshot_take()
++		 * and after that the volume can no longer be mounted
++		 * as rw ext3 (only rw ext4 or ro ext3/ext2).
++		 * If we find a non-zero last_snapshot or snapshot_inum
++		 * and the HAS_SNAPSHOT flag is not set, we ignore them.
++		 */
++		if (load_ino)
++			snapshot_debug(1, "warning: has_snapshot feature not "
++					"set and last snapshot found (%u).\n",
++					load_ino);
++		return 0;
++	}
++
++	while (load_ino) {
++		struct inode *inode;
++
++		inode = ext4_orphan_get(sb, load_ino);
++		if (IS_ERR(inode)) {
++			err = PTR_ERR(inode);
++		} else if (!ext4_snapshot_file(inode)) {
++			iput(inode);
++			err = -EIO;
++		}
++
++		if (err && num == 0 && load_ino != active_ino) {
++			/* failed to load last non-active snapshot */
++			if (!read_only)
++				/* reset list head to active snapshot */
++				es->s_snapshot_list = es->s_snapshot_inum;
++			snapshot_debug(1, "warning: failed to load "
++					"last snapshot (%u) - trying to load "
++					"active snapshot (%u).\n",
++					load_ino, active_ino);
++			/* try to load active snapshot */
++			load_ino = active_ino;
++			err = 0;
++			continue;
++		}
++
++		if (err)
++			break;
++
++		snapshot_id = inode->i_generation;
++		snapshot_debug(1, "snapshot (%d) loaded\n",
++			       snapshot_id);
++		num++;
++
++		if (!has_active && load_ino == active_ino) {
++			/* active snapshot was loaded */
++			err = ext4_snapshot_set_active(sb, inode);
++			if (err)
++				break;
++			has_active = 1;
++		}
++
++		iput(inode);
++		break;
++	}
++
++	if (err) {
++		/* failed to load active snapshot */
++		snapshot_debug(1, "warning: failed to load "
++				"snapshot (ino=%u) - "
++				"forcing read-only mount!\n",
++				load_ino);
++		/* force read-only mount */
++		return read_only ? 0 : err;
++	}
++
++	if (num > 0) {
++		err = ext4_snapshot_update(sb, 0, read_only);
++		snapshot_debug(1, "%d snapshots loaded\n", num);
++	}
++	return err;
++}
++
++/*
++ * ext4_snapshot_destroy() releases the in-memory snapshot list
++ * Called from ext4_put_super() under sb_lock during umount time.
++ * This function cannot fail.
++ */
++void ext4_snapshot_destroy(struct super_block *sb)
++{
++	/* deactivate in-memory active snapshot - cannot fail */
++	(void) ext4_snapshot_set_active(sb, NULL);
++}
++
++/*
++ * ext4_snapshot_update - iterate snapshot list and update snapshots status.
++ * @sb: handle to file system super block.
++ * @cleanup: if true, shrink/merge/cleanup all snapshots marked for deletion.
++ * @read_only: if true, don't remove snapshot after failed take.
++ *
++ * Called from ext4_ioctl() under snapshot_mutex.
++ * Called from snapshot_load() under sb_lock with @cleanup=0.
++ * Returns 0 on success and <0 on error.
++ */
++int ext4_snapshot_update(struct super_block *sb, int cleanup, int read_only)
++{
++	struct inode *active_snapshot = ext4_snapshot_has_active(sb);
++	int err = 0;
++
++	BUG_ON(read_only && cleanup);
++	if (active_snapshot)
++		EXT4_I(active_snapshot)->i_flags |=
++			EXT4_SNAPFILE_ACTIVE_FL|EXT4_SNAPFILE_LIST_FL;
++
++
++	return err;
++}
++#else
+ int ext4_snapshot_load(struct super_block *sb, struct ext4_super_block *es,
+ 		int read_only)
+ {
+@@ -35,3 +260,4 @@
+ void ext4_snapshot_destroy(struct super_block *sb)
+ {
+ }
++#endif
+Index: backup/fs/ext4/snapshot.h
+===================================================================
+--- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:31:02.000000000 +0530
++++ backup/fs/ext4/snapshot.h	2010-12-02 11:32:54.000000000 +0530
+@@ -251,8 +251,50 @@
+ 
+ /* super.c */
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/* tests if @inode is a snapshot file */
++static inline int ext4_snapshot_file(struct inode *inode)
++{
++	if (!S_ISREG(inode->i_mode))
++		/* a snapshots directory */
++		return 0;
++	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_FL;
++}
++
++/* tests if @inode is on the on-disk snapshot list */
++static inline int ext4_snapshot_list(struct inode *inode)
++{
++	return EXT4_I(inode)->i_flags & EXT4_SNAPFILE_LIST_FL;
++}
++#endif
+ 
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/*
++ * ext4_snapshot_excluded():
++ * Checks if the file should be excluded from snapshot.
++ *
++ * Returns 0 for normal file.
++ * Returns > 0 for 'excluded' file.
++ * Returns < 0 for 'ignored' file (stonger than 'excluded').
++ *
++ * Excluded and ignored file blocks are not moved to snapshot.
++ * Ignored file metadata blocks are not COWed to snapshot.
++ * Excluded file metadata blocks are zeroed in the snapshot file.
++ * XXX: Excluded files code is experimental,
++ *      but ignored files code isn't.
++ */
++static inline int ext4_snapshot_excluded(struct inode *inode)
++{
++	/* directory blocks and global filesystem blocks cannot be 'excluded' */
++	if (!inode || !S_ISREG(inode->i_mode))
++		return 0;
++	/* snapshot files are 'ignored' */
++	if (ext4_snapshot_file(inode))
++		return -1;
++	return 0;
++}
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_HOOKS_DATA
+ /*
+@@ -260,6 +302,10 @@
+  */
+ static inline int ext4_snapshot_should_move_data(struct inode *inode)
+ {
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	if (ext4_snapshot_excluded(inode))
++		return 0;
++#endif
+ 	/* when a data block is journaled, it is already COWed as metadata */
+ 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+ 		return 0;
+@@ -269,6 +315,27 @@
+ }
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++/*
++ * tests if the file system has an active snapshot and returns its inode.
++ * active snapshot is only changed under journal_lock_updates(),
++ * so it is safe to use the returned inode during a transaction.
++ */
++static inline struct inode *ext4_snapshot_has_active(struct super_block *sb)
++{
++	return EXT4_SB(sb)->s_active_snapshot;
++}
++
++/*
++ * tests if @inode is the current active snapshot.
++ * active snapshot is only changed under journal_lock_updates(),
++ * so the test result never changes during a transaction.
++ */
++static inline int ext4_snapshot_is_active(struct inode *inode)
++{
++	return (inode == EXT4_SB(inode->i_sb)->s_active_snapshot);
++}
++#endif
+ 
+ 
+ 
+Index: backup/fs/ext4/super.c
+===================================================================
+--- backup.orig/fs/ext4/super.c	2010-12-02 11:03:00.000000000 +0530
++++ backup/fs/ext4/super.c	2010-12-02 11:49:01.000000000 +0530
+@@ -771,6 +771,12 @@
+ 		vfree(sbi->s_flex_groups);
+ 	else
+ 		kfree(sbi->s_flex_groups);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	if (is_vmalloc_addr(sbi->s_group_info))
++		vfree(sbi->s_group_info);
++	else
++		kfree(sbi->s_group_info);
++#endif
+ 	percpu_counter_destroy(&sbi->s_freeblocks_counter);
+ 	percpu_counter_destroy(&sbi->s_freeinodes_counter);
+ 	percpu_counter_destroy(&sbi->s_dirs_counter);
+@@ -3086,6 +3092,10 @@
+ 	const char *descr;
+ 	int ret = -ENOMEM;
+ 	int blocksize;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	unsigned long max_groups;
++	size_t size;
++#endif
+ 	unsigned int db_count;
+ 	unsigned int i;
+ 	int needs_recovery, has_huge_files;
+@@ -3444,6 +3454,23 @@
+ 		ext4_msg(sb, KERN_ERR, "group descriptors corrupted!");
+ 		goto failed_mount2;
+ 	}
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	/* We allocate both existing and potentially added groups */
++	max_groups = (db_count + le16_to_cpu(es->s_reserved_gdt_blocks)) <<
++		EXT4_DESC_PER_BLOCK_BITS(sb);
++	size = max_groups * sizeof(struct ext4_group_info);
++	sbi->s_group_info = kzalloc(size, GFP_KERNEL);
++	if (sbi->s_group_info == NULL) {
++		sbi->s_group_info = vmalloc(size);
++		if (sbi->s_group_info)
++			memset(sbi->s_group_info, 0, size);
++	}
++	if (sbi->s_group_info == NULL) {
++		printk(KERN_ERR "EXT4-fs: not enough memory for "
++				"%lu max groups\n", max_groups);
++		goto failed_mount2;
++	}
++#endif
+ 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_FLEX_BG))
+ 		if (!ext4_fill_flex_info(sb)) {
+ 			ext4_msg(sb, KERN_ERR,
+@@ -3497,6 +3524,11 @@
+ 
+ 	sb->s_root = NULL;
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	mutex_init(&sbi->s_snapshot_mutex);
++	sbi->s_active_snapshot = NULL;
++
++#endif
+ 	needs_recovery = (es->s_last_orphan != 0 ||
+ 			  EXT4_HAS_INCOMPAT_FEATURE(sb,
+ 				    EXT4_FEATURE_INCOMPAT_RECOVER));
+@@ -3769,6 +3801,14 @@
+ 	percpu_counter_destroy(&sbi->s_dirs_counter);
+ 	percpu_counter_destroy(&sbi->s_dirtyblocks_counter);
+ failed_mount2:
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE
++	if (sbi->s_group_info) {
++		if (is_vmalloc_addr(sbi->s_group_info))
++			vfree(sbi->s_group_info);
++		else
++			kfree(sbi->s_group_info);
++	}
++#endif
+ 	for (i = 0; i < db_count; i++)
+ 		brelse(sbi->s_group_desc[i]);
+ 	kfree(sbi->s_group_desc);

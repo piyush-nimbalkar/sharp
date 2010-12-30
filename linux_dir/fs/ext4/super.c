@@ -14,6 +14,9 @@
  *
  *  Big-endian to little-endian byte-swapping/bitmaps by
  *        David S. Miller (davem@caip.rutgers.edu), 1995
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #include <linux/module.h>
@@ -48,6 +51,7 @@
 #include "xattr.h"
 #include "acl.h"
 #include "mballoc.h"
+#include "snapshot.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
@@ -730,6 +734,11 @@ static void ext4_put_super(struct super_block *sb)
 	destroy_workqueue(sbi->dio_unwritten_wq);
 
 	lock_super(sb);
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+	ext4_snapshot_destroy(sb);
+#endif
+
 	if (sb->s_dirt)
 		ext4_commit_super(sb, 1);
 
@@ -3043,7 +3052,22 @@ static void ext4_destroy_lazyinit_thread(void)
 			   ext4_li_info->li_task == NULL);
 	}
 }
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+static char *journal_mode_string(struct super_block *sb)
+{
+	if (!EXT4_SB(sb)->s_journal)
+		return "no-journal";
+	switch (test_opt(sb, DATA_FLAGS)) {
+	case EXT4_MOUNT_JOURNAL_DATA:
+		return "journal";
+	case EXT4_MOUNT_ORDERED_DATA:
+		return "ordered";
+	case EXT4_MOUNT_WRITEBACK_DATA:
+		return "writeback";
+	}
+	return "unknown";
+}
+#endif
 static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 				__releases(kernel_lock)
 				__acquires(kernel_lock)
@@ -3217,8 +3241,14 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 
 	blocksize = BLOCK_SIZE << le32_to_cpu(es->s_log_block_size);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+	/* Block size must be equal to page size */
+	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)
+		 || blocksize != SNAPSHOT_BLOCK_SIZE) {
+#else
 	if (blocksize < EXT4_MIN_BLOCK_SIZE ||
 	    blocksize > EXT4_MAX_BLOCK_SIZE) {
+#endif
 		ext4_msg(sb, KERN_ERR,
 		       "Unsupported filesystem blocksize %d", blocksize);
 		goto failed_mount;
@@ -3561,7 +3591,23 @@ no_journal:
 		printk(KERN_ERR "EXT4-fs: failed to create DIO workqueue\n");
 		goto failed_mount_wq;
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
 
+	/* Ext4 unsupported features */
+	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT)
+		 && (!EXT4_SB(sb)->s_journal || test_opt(sb, DATA_FLAGS) !=
+		     EXT4_MOUNT_ORDERED_DATA) && (!test_opt(sb, QUOTA))) {
+		printk(KERN_ERR "EXT4-fs: %s mode is not supported\n",
+			journal_mode_string(sb));
+		goto failed_mount3;
+	}
+	if (sbi->s_jquota_fmt) {
+		printk(KERN_ERR "EXT4-fs: journaled quota options are not"
+			" supported.\n");
+		goto failed_mount3;
+	}
+
+#endif
 	/*
 	 * The jbd2_journal_load will have done any necessary log recovery,
 	 * so we can safely mount the rest of the filesystem now.
@@ -3587,6 +3633,13 @@ no_journal:
 	}
 
 	ext4_setup_super(sb, es, sb->s_flags & MS_RDONLY);
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+	if (ext4_snapshot_load(sb, es, sb->s_flags & MS_RDONLY))
+		/* XXX: how to fail mount/force read-only at this point? */
+		ext4_error(sb, "load snapshot failed\n");
+#endif
+
 
 	/* determine the minimum size of new large inodes, if present */
 	if (sbi->s_inode_size > EXT4_GOOD_OLD_INODE_SIZE) {
@@ -4878,10 +4931,18 @@ static int __init ext4_init_fs(void)
 	err = register_filesystem(&ext4_fs_type);
 	if (err)
 		goto out;
-
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+	err = init_ext4_snapshot();
+	if (err)
+		goto out_fs;
+#endif
 	ext4_li_info = NULL;
 	mutex_init(&ext4_li_mtx);
 	return 0;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+out_fs:
+	unregister_filesystem(&ext4_fs_type);
+#endif
 out:
 	unregister_as_ext2();
 	unregister_as_ext3();
@@ -4903,6 +4964,9 @@ out5:
 
 static void __exit ext4_exit_fs(void)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+	exit_ext4_snapshot();
+#endif
 	ext4_destroy_lazyinit_thread();
 	unregister_as_ext2();
 	unregister_as_ext3();

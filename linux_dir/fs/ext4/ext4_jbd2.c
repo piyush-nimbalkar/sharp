@@ -1,8 +1,12 @@
 /*
  * Interface between ext4 and JBD
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #include "ext4_jbd2.h"
+#include "snapshot.h"
 
 #include <trace/events/ext4.h>
 

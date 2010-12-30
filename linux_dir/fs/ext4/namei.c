@@ -22,6 +22,9 @@
  *	Christopher Li, 2002
  *  Hash Tree Directory indexing cleanup
  *	Theodore Ts'o, 2002
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #include <linux/fs.h>
@@ -39,6 +42,7 @@
 
 #include "xattr.h"
 #include "acl.h"
+#include "snapshot.h"
 
 /*
  * define how far ahead to read directories while searching them.

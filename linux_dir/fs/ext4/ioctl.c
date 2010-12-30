@@ -5,6 +5,9 @@
  * Remy Card (card@masi.ibp.fr)
  * Laboratoire MASI - Institut Blaise Pascal
  * Universite Pierre et Marie Curie (Paris VI)
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #include <linux/fs.h>
@@ -18,6 +21,7 @@
 #include <linux/smp_lock.h>
 #include "ext4_jbd2.h"
 #include "ext4.h"
+#include "snapshot.h"
 
 static void print_inode_dealloc_info(struct inode *inode)
 {

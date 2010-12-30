@@ -75,6 +75,13 @@ config EXT4_FS_SECURITY
 	  If you are not using a security module that requires using
 	  extended attributes for file security labels, say N.
 
+config EXT4_FS_SNAPSHOT
+	bool "snapshot support"
+	depends on EXT4_FS
+	default y
+	help
+	  If you say N here, then Ext4 will be identical to Ext3.
+
 config EXT4_DEBUG
 	bool "EXT4 debugging support"
 	depends on EXT4_FS

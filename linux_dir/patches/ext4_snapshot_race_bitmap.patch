@@ -1,0 +1,101 @@
+Index: linux-2.6.37.1.x/fs/ext4/Kconfig
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/Kconfig	2010-12-29 13:08:04.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/Kconfig	2010-12-29 13:15:29.000000000 +0530
+@@ -316,6 +316,27 @@
+ 	  oldest found mapping is returned.  If the page is not mapped in any of
+ 	  the newer snapshots, a direct mapping to the block device is returned.
+ 
++config EXT4_FS_SNAPSHOT_RACE
++	bool "snapshot race conditions"
++	depends on EXT4_FS_SNAPSHOT_BLOCK
++	default y
++	help
++	  Resolve snapshot race conditions
++
++
++config EXT4_FS_SNAPSHOT_RACE_BITMAP
++	bool "snapshot race conditions - concurrent COW bitmap operations"
++	depends on EXT4_FS_SNAPSHOT_RACE
++	default y
++	help
++	  Wait for pending COW bitmap creations to complete.
++	  When concurrent tasks try to COW buffers from the same block group
++	  for the first time, the first task to reset the COW bitmap cache
++	  is elected to create the new COW bitmap block.  The rest of the tasks
++	  wait (in msleep(1) loop), until the COW bitmap cache is uptodate.
++	  The COWing task copies the bitmap block into the new COW bitmap block
++	  and updates the COW bitmap cache with the new block number.
++
+ 
+ config EXT4_FS_SNAPSHOT_CTL_INIT
+ 	bool "snapshot control - init new snapshot"
+Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
+===================================================================
+--- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-12-29 13:08:04.000000000 +0530
++++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-12-29 13:18:50.000000000 +0530
+@@ -418,6 +418,9 @@
+ 	ext4_fsblk_t bitmap_blk;
+ 	ext4_fsblk_t cow_bitmap_blk;
+ 	int err = 0;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_BITMAP
++	SNAPSHOT_DEBUG_ONCE;
++#endif
+ 
+ 	desc = ext4_get_group_desc(sb, block_group, NULL);
+ 	if (!desc)
+@@ -425,9 +428,54 @@
+ 
+ 	bitmap_blk = ext4_block_bitmap(sb,desc);
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_RACE_BITMAP
++	/*
++	 * Handle concurrent COW bitmap operations.
++	 * bg_cow_bitmap has 3 states:
++	 * = 0 - uninitialized (after mount and after snapshot take).
++	 * = bg_block_bitmap - marks pending COW of block bitmap.
++	 * other - location of initialized COW bitmap block.
++	 *
++	 * The first task to access block group after mount or snapshot take,
++	 * will read the uninitialized state, mark pending COW state, initialize
++	 * the COW bitmap block and update COW bitmap cache.  Other tasks will
++	 * busy wait until the COW bitmap cache is in initialized state, before
++	 * reading the COW bitmap block.
++	 */
++	do {
++		spin_lock(sb_bgl_lock(sbi, block_group));
++		cow_bitmap_blk = gi->bg_cow_bitmap;
++		if (cow_bitmap_blk == 0)
++			/* mark pending COW of bitmap block */
++			gi->bg_cow_bitmap = bitmap_blk;
++		spin_unlock(sb_bgl_lock(sbi, block_group));
++
++		if (cow_bitmap_blk == 0) {
++			snapshot_debug(3, "initializing COW bitmap #%u "
++					"of snapshot (%u)...\n",
++					block_group, snapshot->i_generation);
++			/* sleep 1 tunable delay unit */
++			snapshot_test_delay(SNAPTEST_BITMAP);
++			break;
++		}
++		if (cow_bitmap_blk == bitmap_blk) {
++			/* wait for another task to COW bitmap block */
++			snapshot_debug_once(2, "waiting for pending COW "
++					    "bitmap #%d...\n", block_group);
++			/*
++			 * This is an unlikely event that can happen only once
++			 * per block_group/snapshot, so msleep(1) is sufficient
++			 * and there is no need for a wait queue.
++			 */
++			msleep(1);
++		}
++		/* XXX: Should we fail after N retries? */
++	} while (cow_bitmap_blk == 0 || cow_bitmap_blk == bitmap_blk);
++#else
+ 	ext4_lock_group(sb,block_group);
+ 	cow_bitmap_blk = gi->bg_cow_bitmap;
+ 	ext4_unlock_group(sb,block_group);
++#endif
+ 	if (cow_bitmap_blk)
+ 		return sb_bread(sb, cow_bitmap_blk);
+ 

@@ -11,6 +11,9 @@
  *  linux/include/linux/minix_fs.h
  *
  *  Copyright (C) 1991, 1992  Linus Torvalds
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #ifndef _EXT4_H
@@ -33,6 +36,25 @@
 #include <linux/compat.h>
 #endif
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+#ifndef EXT4_SUPER_MAGIC
+#define EXT4_SUPER_MAGIC EXT3_SUPER_MAGIC
+/* if the kernel was not patched, ext4 is compiled as standalone module */
+#define CONFIG_EXT4_FS_STANDALONE
+#endif
+
+#ifdef CONFIG_EXT4_FS_STANDALONE
+/* configuration options for standalone module */
+#define CONFIG_EXT4_DEFAULTS_TO_ORDERED
+#define CONFIG_EXT4_FS_XATTR
+#define CONFIG_EXT4_FS_SECURITY
+#define CONFIG_EXT4_FS_DEBUG
+#endif
+#if defined(CONFIG_EXT4_FS_STANDALONE) && defined(CONFIG_FS_POSIX_ACL)
+#define CONFIG_EXT4_FS_POSIX_ACL
+#endif
+
+#endif
 /*
  * The fourth extended filesystem constants/structures
  */
@@ -1326,6 +1348,9 @@ EXT4_INODE_BIT_FNS(state, state_flags)
 #define EXT4_FEATURE_RO_COMPAT_SPARSE_SUPER	0x0001
 #define EXT4_FEATURE_RO_COMPAT_LARGE_FILE	0x0002
 #define EXT4_FEATURE_RO_COMPAT_BTREE_DIR	0x0004
+#ifdef CONFIG_EXT4_FS_SNAPSHOT
+#define EXT4_FEATURE_RO_COMPAT_HAS_SNAPSHOT  0x0080 /* Ext4 has snapshots */
+#endif
 #define EXT4_FEATURE_RO_COMPAT_HUGE_FILE        0x0008
 #define EXT4_FEATURE_RO_COMPAT_GDT_CSUM		0x0010
 #define EXT4_FEATURE_RO_COMPAT_DIR_NLINK	0x0020

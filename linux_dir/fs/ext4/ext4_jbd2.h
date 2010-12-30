@@ -10,6 +10,9 @@
  * option, any later version, incorporated herein by reference.
  *
  * Ext4-specific journaling extensions.
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #ifndef _EXT4_JBD2_H
@@ -279,10 +282,12 @@ static inline int ext4_should_journal_data(struct inode *inode)
 		return 0;
 	if (!S_ISREG(inode->i_mode))
 		return 1;
+#ifndef CONFIG_EXT4_FS_SNAPSHOT
 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA)
 		return 1;
 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
 		return 1;
+#endif
 	return 0;
 }
 
@@ -292,8 +297,10 @@ static inline int ext4_should_order_data(struct inode *inode)
 		return 0;
 	if (!S_ISREG(inode->i_mode))
 		return 0;
+#ifndef CONFIG_EXT4_FS_SNAPSHOT
 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
 		return 0;
+#endif
 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_ORDERED_DATA)
 		return 1;
 	return 0;
@@ -305,8 +312,10 @@ static inline int ext4_should_writeback_data(struct inode *inode)
 		return 0;
 	if (EXT4_JOURNAL(inode) == NULL)
 		return 1;
+#ifndef CONFIG_EXT4_FS_SNAPSHOT
 	if (ext4_test_inode_flag(inode, EXT4_INODE_JOURNAL_DATA))
 		return 0;
+#endif
 	if (test_opt(inode->i_sb, DATA_FLAGS) == EXT4_MOUNT_WRITEBACK_DATA)
 		return 1;
 	return 0;

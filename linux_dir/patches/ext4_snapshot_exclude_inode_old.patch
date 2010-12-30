@@ -1,0 +1,81 @@
+diff -Nuarp a/fs/ext4/inode.c b/fs/ext4/inode.c
+--- a/fs/ext4/inode.c	2010-11-11 10:47:11.000000000 +0200
++++ b/fs/ext4/inode.c	2010-11-11 10:47:11.000000000 +0200
+@@ -3443,6 +3443,23 @@ struct inode *ext4_iget(struct super_bl
+ 		goto bad_inode;
+ 	bh = iloc.bh;
+ 	raw_inode = ext4_raw_inode(&iloc);
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE_OLD
++	/* Migrate old to new exclude inode on first iget */
++	if (ino == EXT4_EXCLUDE_INO && EXT4_HAS_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_COMPAT_EXCLUDE_INODE_OLD)) {
++		/* both inodes are on the same block */
++		char *old_inode = ((char *)raw_inode +
++			(EXT4_EXCLUDE_INO_OLD - EXT4_EXCLUDE_INO) *
++			EXT4_INODE_SIZE(inode->i_sb));
++
++		/* copy old exclude inode */
++		memcpy((char *)raw_inode, old_inode,
++				EXT4_INODE_SIZE(inode->i_sb));
++		/* clear old exclude inode */
++		memset(old_inode, 0, EXT4_INODE_SIZE(inode->i_sb));
++		/* inode block will be marked dirty outside this function */
++	}
++#endif
+ 	inode->i_mode = le16_to_cpu(raw_inode->i_mode);
+ 	inode->i_uid = (uid_t)le16_to_cpu(raw_inode->i_uid_low);
+ 	inode->i_gid = (gid_t)le16_to_cpu(raw_inode->i_gid_low);
+diff -Nuarp a/fs/ext4/Kconfig b/fs/ext4/Kconfig
+--- a/fs/ext4/Kconfig	2010-11-11 10:47:11.000000000 +0200
++++ b/fs/ext4/Kconfig	2010-11-11 10:47:10.000000000 +0200
+@@ -467,3 +467,13 @@ config EXT4_FS_SNAPSHOT_EXCLUDE_INODE
+ 	  The location of exclude bitmap blocks is read on mount time and cached
+ 	  in the group descriptors.  The exclude inode is extended upon online
+ 	  and offline resize operations when block groups are added.
++
++config EXT4_FS_SNAPSHOT_EXCLUDE_INODE_OLD
++	bool "snapshot exclude - migrate old exclude inode"
++	depends on EXT4_FS_SNAPSHOT_EXCLUDE
++	default y
++	help
++	  Exclude inode number has changed from 10 to 9.  The exclude_inode
++	  flag has also changed.  When old exclude_inode flag is set,
++	  copy inode 10 to 9, clear inode 10 and clear old exclude_inode flag.
++	  (new exclude_inode flag is set during migration of super block).
+diff -Nuarp a/fs/ext4/ext4.h b/fs/ext4/ext4.h
+--- a/fs/ext4/ext4.h	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/ext4.h	2010-11-11 10:47:11.000000000 +0200
+@@ -84,6 +84,9 @@
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE
+ #define EXT4_EXCLUDE_INO		 9	/* Snapshot exclude inode */
+ #endif
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE_OLD
++#define EXT4_EXCLUDE_INO_OLD		10	/* Old exclude inode */
++#endif
+ 
+ /* First non-reserved inode for old ext4 filesystems */
+ #define EXT4_GOOD_OLD_FIRST_INO	11
+diff -Nuarp a/fs/ext4/snapshot_ctl.c b/fs/ext4/snapshot_ctl.c
+--- a/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:12.000000000 +0200
++++ b/fs/ext4/snapshot_ctl.c	2010-11-11 10:47:11.000000000 +0200
+@@ -1401,6 +1401,20 @@ static int ext4_snapshot_init_bitmap_ca
+ 		max_groups *= EXT4_DESC_PER_BLOCK(sb);
+ 	}
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_EXCLUDE_INODE_OLD
++	if (create && EXT4_HAS_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_COMPAT_EXCLUDE_INODE_OLD)) {
++		/* journal exclude inode migration done inside ext4_iget */
++		err = ext4_journal_get_write_access(handle, sbi->s_sbh);
++		EXT4_CLEAR_COMPAT_FEATURE(sb,
++				EXT4_FEATURE_COMPAT_EXCLUDE_INODE_OLD);
++		if (!err)
++			err = ext4_journal_dirty_metadata(handle, sbi->s_sbh);
++		if (!err)
++			err = ext4_mark_inode_dirty(handle, inode);
++	}
++
++#endif
+ 	/*
+ 	 * Init exclude bitmap blocks for all existing block groups and
+ 	 * allocate indirect blocks for all reserved block groups.

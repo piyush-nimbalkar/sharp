@@ -9,6 +9,9 @@
  *  Enhanced block allocation by Stephen Tweedie (sct@redhat.com), 1993
  *  Big-endian to little-endian byte-swapping/bitmaps by
  *        David S. Miller (davem@caip.rutgers.edu), 1995
+ *
+ * Copyright (C) 2008-2010 CTERA Networks
+ * Added snapshot support, Amir Goldstein <amir73il@users.sf.net>, 2008
  */
 
 #include <linux/time.h>
@@ -20,6 +23,7 @@
 #include "ext4.h"
 #include "ext4_jbd2.h"
 #include "mballoc.h"
+#include "snapshot.h"
 
 /*
  * balloc.c contains the blocks allocation and deallocation routines

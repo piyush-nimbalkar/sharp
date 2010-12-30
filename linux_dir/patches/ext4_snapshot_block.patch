@@ -1,0 +1,247 @@
+Index: linux_dir/fs/ext4/inode.c
+===================================================================
+--- linux_dir.orig/fs/ext4/inode.c	2010-12-30 06:45:36.000000000 +0530
++++ linux_dir/fs/ext4/inode.c	2010-12-30 06:48:35.000000000 +0530
+@@ -326,6 +326,7 @@
+ 		double_blocks = (1 << (ptrs_bits * 2));
+ 	int n = 0;
+ 	int final = 0;
++
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
+ 	int tind;
+ #endif
+@@ -964,6 +965,14 @@
+  * down_read(&EXT4_I(inode)->i_data_sem) if not allocating file system
+  * blocks.
+  */
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++/*
++ * snapshot_map_blocks() command flags are passed to get_blocks_handle() on its
++ * @create argument.  All places in original code call get_blocks_handle()
++ * with @create 0 or 1.  The behavior of the function remains the same for
++ * these 2 values, while higher bits are used for mapping snapshot blocks.
++ */
++#endif
+ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
+ 			       struct ext4_map_blocks *map,
+ 			       int flags)
+Index: linux_dir/fs/ext4/Kconfig
+===================================================================
+--- linux_dir.orig/fs/ext4/Kconfig	2010-12-30 06:45:40.000000000 +0530
++++ linux_dir/fs/ext4/Kconfig	2010-12-30 06:48:35.000000000 +0530
+@@ -184,3 +184,15 @@
+ 	  Snapshot flags and super block field positions have changed.
+ 	  When old has_snapshot flag is set, copy fields to new position,
+ 	  clear old flags and fields and set new flags on mount time.
++
++config EXT4_FS_SNAPSHOT_BLOCK
++	bool "snapshot block operations"
++	depends on EXT4_FS_SNAPSHOT_FILE
++	default y
++	help
++	  Core implementation of special snapshot file block operations.
++	  The argument @create to the function ext4_get_blocks_handle()
++	  is re-interpreted as a snapshot block command argument.  The old
++	  argument values 0(=read) and 1(=create) preserve the original
++	  behavior of the function.  The bit field h_cowing in the current
++	  transaction handle is used to prevent COW recursions.
+Index: linux_dir/fs/ext4/snapshot.c
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot.c	2010-12-30 06:27:35.000000000 +0530
++++ linux_dir/fs/ext4/snapshot.c	2010-12-30 06:48:35.000000000 +0530
+@@ -13,7 +13,52 @@
+  */
+ 
+ #include "snapshot.h"
++#include "ext4.h"
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++#define snapshot_debug_hl(n, f, a...) snapshot_debug_l(n, handle ? \
++					IS_COWING(handle) : 0, f, ## a)
++
++/*
++ * ext4_snapshot_map_blocks() - helper function for
++ * ext4_snapshot_test_and_cow().  Test if blocks are mapped in snapshot file.
++ * If @block is not mapped and if @cmd is non zero, try to allocate @maxblocks.
++ * Also used by ext4_snapshot_create() to pre-allocate snapshot blocks.
++ *
++ * Return values:
++ * > 0 - no. of mapped blocks in snapshot file
++ * = 0 - @block is not mapped in snapshot file
++ * < 0 - error
++ */
++int ext4_snapshot_map_blocks(handle_t *handle, struct inode *inode,
++			      ext4_snapblk_t block, unsigned long maxblocks,
++			      ext4_fsblk_t *mapped, int cmd)
++{
++	int err;
++	struct ext4_map_blocks map;
++	map.m_len = maxblocks;
++	map.m_pblk = SNAPSHOT_IBLOCK(block);
++#ifdef WARNING_NOT_IMPLEMENTED
++	map.m_flag = ?;
++#endif
++	err = ext4_map_blocks(handle, inode, &map, cmd);
++	/*
++	 * ext4_get_blocks_handle() returns number of blocks
++	 * mapped. 0 in case of a HOLE.
++	 */
++	if (mapped && err > 0)
++		*mapped = map.m_pblk;
++
++	snapshot_debug_hl(4, "snapshot (%u) map_blocks "
++			"[%lld/%lld] = [%lld/%lld] "
++			"cmd=%d, maxblocks=%lu, mapped=%d\n",
++			inode->i_generation,
++			SNAPSHOT_BLOCK_TUPLE(block),
++			SNAPSHOT_BLOCK_TUPLE(map.m_pblk),
++			cmd, maxblocks, err);
++	return err;
++}
++#endif
+ 
+ #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_READ
+ /*
+@@ -31,6 +76,29 @@
+ {
+ 	struct ext4_inode_info *ei = EXT4_I(inode);
+ 	unsigned int flags = ei->i_flags;
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++#ifdef CONFIG_EXT4_FS_DEBUG
++	ext4_fsblk_t block = SNAPSHOT_BLOCK(iblock);
++	unsigned long block_group = (iblock < SNAPSHOT_BLOCK_OFFSET ? -1 :
++			SNAPSHOT_BLOCK_GROUP(block));
++	ext4_grpblk_t blk = (iblock < SNAPSHOT_BLOCK_OFFSET ? iblock :
++			SNAPSHOT_BLOCK_GROUP_OFFSET(block));
++	snapshot_debug_hl(4, "snapshot (%u) get_blocks [%d/%lu] count=%d "
++			  "cmd=%d\n", inode->i_generation, blk, block_group,
++			  count, cmd);
++#endif
++
++	if (SNAPMAP_ISSPECIAL(cmd)) {
++		/*
++		 * COWing or moving blocks to active snapshot
++		 */
++		BUG_ON(!handle || !IS_COWING(handle));
++		BUG_ON(!(flags & EXT4_SNAPFILE_ACTIVE_FL));
++		BUG_ON(iblock < SNAPSHOT_BLOCK_OFFSET);
++		return 0;
++	} else if (cmd)
++		BUG_ON(handle && IS_COWING(handle));
++#endif
+ 
+ 	if (!(flags & EXT4_SNAPFILE_LIST_FL))
+ 		return 0;
+Index: linux_dir/fs/ext4/snapshot.h
+===================================================================
+--- linux_dir.orig/fs/ext4/snapshot.h	2010-12-30 06:27:35.000000000 +0530
++++ linux_dir/fs/ext4/snapshot.h	2010-12-30 06:48:35.000000000 +0530
+@@ -106,6 +106,50 @@
+ #endif
+ 
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++/*
++ * snapshot_map_blocks() command flags passed to get_blocks_handle() on its
++ * @create argument.  All places in original code call get_blocks_handle()
++ * with @create 0 or 1.  The behavior of the function remains the same for
++ * these 2 values, while higher bits are used for mapping snapshot blocks.
++ */
++/* original meaning - only check if blocks are mapped */
++#define SNAPMAP_READ	0
++/* original meaning - allocate missing blocks and indirect blocks */
++#define SNAPMAP_WRITE	0x1
++/* creating COWed block - handle COW race conditions */
++#define SNAPMAP_COW	0x2
++/* moving blocks to snapshot - allocate only indirect blocks */
++#define SNAPMAP_MOVE	0x4
++/* bypass journal and sync allocated indirect blocks directly to disk */
++#define SNAPMAP_SYNC	0x8
++/* creating COW bitmap - handle COW races and bypass journal */
++#define SNAPMAP_BITMAP	(SNAPMAP_COW|SNAPMAP_SYNC)
++
++/* original @create flag test - only check map or create map? */
++#define SNAPMAP_ISREAD(cmd)	((cmd) == SNAPMAP_READ)
++#define SNAPMAP_ISWRITE(cmd)	((cmd) == SNAPMAP_WRITE)
++#define SNAPMAP_ISCREATE(cmd)	((cmd) != SNAPMAP_READ)
++/* test special cases when mapping snapshot blocks */
++#define SNAPMAP_ISSPECIAL(cmd)	((cmd) & ~SNAPMAP_WRITE)
++#define SNAPMAP_ISCOW(cmd)	((cmd) & SNAPMAP_COW)
++#define SNAPMAP_ISMOVE(cmd)	((cmd) & SNAPMAP_MOVE)
++#define SNAPMAP_ISSYNC(cmd)	((cmd) & SNAPMAP_SYNC)
++
++/* helper functions for ext4_snapshot_create() */
++extern int ext4_snapshot_map_blocks(handle_t *handle, struct inode *inode,
++				     ext4_snapblk_t block,
++				     unsigned long maxblocks,
++				     ext4_fsblk_t *mapped, int cmd);
++/* helper function for ext4_snapshot_take() */
++extern void ext4_snapshot_copy_buffer(struct buffer_head *sbh,
++					   struct buffer_head *bh,
++					   const char *mask);
++/* helper function for ext4_snapshot_get_block() */
++extern int ext4_snapshot_read_block_bitmap(struct super_block *sb,
++		unsigned int block_group, struct buffer_head *bitmap_bh);
++
++#endif
+ #define ext4_snapshot_cow(handle, inode, bh, cow) 0
+ 
+ #define ext4_snapshot_move(handle, inode, block, num, move) (num)
+Index: linux_dir/fs/ext4/ext4_jbd2.h
+===================================================================
+--- linux_dir.orig/fs/ext4/ext4_jbd2.h	2010-12-30 06:27:32.000000000 +0530
++++ linux_dir/fs/ext4/ext4_jbd2.h	2010-12-30 06:45:41.000000000 +0530
+@@ -105,6 +105,53 @@
+ #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
+ #endif
+ 
++#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
++
++/*
++ * This struct is binary compatible to struct handle_s in include/linux/jbd.h
++ * for building a standalone ext4 module.
++ * XXX: be aware of changes to the original struct!!!
++ */
++struct ext4_handle_s {
++
++	/* Which compound transaction is this update a part of? */
++	transaction_t		*h_transaction;
++
++	/* Number of remaining buffers we are allowed to dirty: */
++	int			h_buffer_credits;
++
++	/* Reference count on this handle */
++	int			h_ref;
++
++	/* Field for caller's use to track errors through large fs */
++	/* operations */
++	int			h_err;
++
++	/* Flags [no locking] */
++	unsigned int	h_sync:		1;	/* sync-on-close */
++	unsigned int	h_jdata:	1;	/* force data journaling */
++	unsigned int	h_aborted:	1;	/* fatal error on handle */
++	unsigned int	h_cowing:	1;	/* COWing block to snapshot */
++
++#ifdef CONFIG_DEBUG_LOCK_ALLOC
++	struct lockdep_map	h_lockdep_map;
++#endif
++};
++
++#ifndef _EXT4_HANDLE_T
++#define _EXT4_HANDLE_T
++typedef struct ext4_handle_s		ext4_handle_t;	/* Ext4 COW handle */
++#endif
++
++#define IS_COWING(handle) \
++	((ext4_handle_t *)(handle))->h_cowing
++
++#define trace_cow_add(handle, name, num)
++#define trace_cow_inc(handle, name)
++
++#endif
++
++
+ #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
+ #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))
