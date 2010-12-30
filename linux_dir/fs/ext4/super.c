@@ -304,10 +304,57 @@ int __ext4_journal_stop(const char *where, unsigned int line, handle_t *handle)
 	return err;
 }
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+/* record error messages after journal super block */
+static void ext4_record_journal_err(struct super_block *sb, const char*where,
+		const char *function, const char *fmt, va_list args)
+{
+#define MSGLEN 256
+	journal_t *journal = EXT4_SB(sb)->s_journal;
+	char *buf;
+	unsigned long offset;
+	int len;
+	if (!journal)
+		return;
+
+	buf = (char *)journal->j_superblock;
+	offset = (unsigned long)buf % sb->s_blocksize;
+	buf += sizeof(journal_superblock_t);
+	offset += sizeof(journal_superblock_t);
+
+	/* seek to end of message buffer */
+	while (offset < sb->s_blocksize && *buf) {
+		buf += MSGLEN;
+		offset += MSGLEN;
+	}
+
+	if (offset+MSGLEN > sb->s_blocksize)
+		/* no space left in message buffer */
+		return;
+
+	len = snprintf(buf, MSGLEN, "%s: %s: ", where, function);
+	len += vsnprintf(buf+len, MSGLEN-len, fmt, args);
+}
+
+static void ext4_record_journal_errstr(struct super_block *sb,
+		const char *where, const char *function, ...)
+{
+	va_list args;
+
+	va_start(args, function);
+	ext4_record_journal_err(sb, where, function, "%s\n", args);
+	va_end(args);
+}
+
+#endif
+
 void ext4_journal_abort_handle(const char *caller, unsigned int line,
 			       const char *err_fn, struct buffer_head *bh,
 			       handle_t *handle, int err)
 {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	struct super_block *sb = handle->h_transaction->t_journal->j_private;
+#endif
 	char nbuf[16];
 	const char *errstr = ext4_decode_error(NULL, err, nbuf);
 
@@ -324,6 +371,12 @@ void ext4_journal_abort_handle(const char *caller, unsigned int line,
 
 	printk(KERN_ERR "%s:%d: aborting transaction: %s in %s\n",
 	       caller, line, errstr, err_fn);
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	/* record error message in journal super block */
+	ext4_record_journal_errstr(sb, caller, err_fn, errstr);
+
+#endif
 
 	jbd2_journal_abort_handle(handle);
 }
@@ -409,6 +462,9 @@ void __ext4_error(struct super_block *sb, const char *function,
 	       sb->s_id, function, line, current->comm);
 	vprintk(fmt, args);
 	printk("\n");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	ext4_record_journal_err(sb, __func__, function, fmt, args);
+#endif
 	va_end(args);
 
 	ext4_handle_error(sb);
@@ -472,6 +528,9 @@ static const char *ext4_decode_error(struct super_block *sb, int errno,
 				     char nbuf[16])
 {
 	char *errstr = NULL;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	handle_t *handle = journal_current_handle();
+#endif
 
 	switch (errno) {
 	case -EIO:
@@ -486,6 +545,13 @@ static const char *ext4_decode_error(struct super_block *sb, int errno,
 			errstr = "Journal has aborted";
 		else
 			errstr = "Readonly filesystem";
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+		if (!handle || handle->h_err != -ENOSPC)
+			break;
+		/* fall through */
+	case -ENOSPC:
+		errstr = "Snapshot out of disk space";
+#endif
 		break;
 	default:
 		/* If the caller passed in an extra buffer for unknown
@@ -523,6 +589,11 @@ void __ext4_std_error(struct super_block *sb, const char *function,
 	       sb->s_id, function, line, errstr);
 	save_error_info(sb, function, line);
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	/* record error message in journal super block */
+	ext4_record_journal_errstr(sb, __func__, function, errstr);
+
+#endif
 	ext4_handle_error(sb);
 }
 
@@ -547,6 +618,10 @@ void __ext4_abort(struct super_block *sb, const char *function,
 	       function, line);
 	vprintk(fmt, args);
 	printk("\n");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	/* record error message in journal super block */
+	ext4_record_journal_err(sb, __func__, function, fmt, args);
+#endif
 	va_end(args);
 
 	if ((sb->s_flags & MS_RDONLY) == 0) {
@@ -570,6 +645,14 @@ void ext4_msg (struct super_block * sb, const char *prefix,
 	printk("%sEXT4-fs (%s): ", prefix, sb->s_id);
 	vprintk(fmt, args);
 	printk("\n");
+
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+#warning "function" parameter not declared
+#ifdef WARNING_NOT_IMPLEMENTED
+	/* record error message in journal super block */
+	ext4_record_journal_err(sb, __func__, function, fmt, args);
+#endif
+#endif
 	va_end(args);
 }
 
@@ -4226,12 +4309,38 @@ static void ext4_clear_journal_err(struct super_block *sb,
 	j_errno = jbd2_journal_errno(journal);
 	if (j_errno) {
 		char nbuf[16];
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+		char *buf1, *buf2;
+		unsigned long offset1, offset2;
+		int len1, len2;
 
+		/* copy message buffer from journal to super block */
+		buf1 = (char *)journal->j_superblock;
+		offset1 = (unsigned long)buf1 % sb->s_blocksize;
+		buf1 += sizeof(journal_superblock_t);
+		offset1 += sizeof(journal_superblock_t);
+		len1 = sb->s_blocksize - offset1;
+		buf2 = (char *)EXT4_SB(sb)->s_es;
+		offset2 = (unsigned long)buf2 % sb->s_blocksize;
+		buf2 += sizeof(struct ext4_super_block);
+		offset2 += sizeof(struct ext4_super_block);
+		len2 = sb->s_blocksize - offset2;
+		if (len2 > len1)
+			len2 = len1;
+		if (len2 > 0 && *buf1)
+			memcpy(buf2, buf1, len2);
+#endif
 		errstr = ext4_decode_error(sb, j_errno, nbuf);
 		ext4_warning(sb, "Filesystem error recorded "
 			     "from previous mount: %s", errstr);
 		ext4_warning(sb, "Marking fs in need of filesystem check.");
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+		/* clear journal message buffer */
+		if (len1 > 0)
+			memset(buf1, 0, len1);
+
+#endif
 		EXT4_SB(sb)->s_mount_state |= EXT4_ERROR_FS;
 		es->s_state |= cpu_to_le16(EXT4_ERROR_FS);
 		ext4_commit_super(sb, 1);

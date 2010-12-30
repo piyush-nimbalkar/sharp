@@ -205,6 +205,31 @@ config EXT4_FS_SNAPSHOT_BLOCK_COW
 	  Implementation of copying blocks into a snapshot file.
 	  This mechanism is used to copy-on-write metadata blocks to snapshot.
 
+
+config EXT4_FS_SNAPSHOT_JOURNAL
+	bool "snapshot journaled"
+	depends on EXT4_FS_SNAPSHOT_BLOCK
+	default y
+	help
+	  Ext4 snapshot operations are journaled inside the same transaction
+	  with the file system operation that triggered them.
+
+
+config EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	bool "snapshot journaled - record errors in journal"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	default y
+	help
+	  Ext4 error state is recorded in the journal super block and error
+	  messages are recorder in free space after the journal super block.
+	  Ext4 should be mounted with errors=remount-ro.
+	  After a snapshot error, the file system will be in read-only mode.
+	  The administrator must un-mount the file system and run fsck
+	  to prevent data corruption.
+	  Some places in Ext3 original code don't check for return value of
+	  JBD functions.  Check for snapshot/journal errors in those places.
+
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK

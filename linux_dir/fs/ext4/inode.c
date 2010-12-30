@@ -4699,6 +4699,11 @@ static int ext4_clear_blocks(handle_t *handle, struct inode *inode,
 #else
 			ext4_journal_get_write_access(handle, bh);
 #endif
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+			/* we may have lost write_access on bh */
+			if (is_handle_aborted(handle))
+				return;
+#endif
 		}
 	}
 
@@ -4771,6 +4776,11 @@ static void ext4_free_data(handle_t *handle, struct inode *inode,
 						      block_to_free, count,
 						      block_to_free_p, p))
 					break;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+				/* we may have lost write_access on this_bh */
+				if (is_handle_aborted(handle))
+					return;
+#endif
 				block_to_free = nr;
 				block_to_free_p = p;
 				count = 1;
@@ -4781,6 +4791,11 @@ static void ext4_free_data(handle_t *handle, struct inode *inode,
 	if (count > 0)
 		ext4_clear_blocks(handle, inode, this_bh, block_to_free,
 				  count, block_to_free_p, p);
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	/* we may have lost write_access on this_bh */
+	if (is_handle_aborted(handle))
+		return;
+#endif
 
 	if (this_bh) {
 		BUFFER_TRACE(this_bh, "call ext4_handle_dirty_metadata");

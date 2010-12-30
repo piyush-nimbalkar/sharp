@@ -1643,8 +1643,17 @@ static int ext4_delete_entry(handle_t *handle,
 		if (!ext4_check_dir_entry(dir, de, bh, i))
 			return -EIO;
 		if (de == de_del)  {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+			int err;
+
+			BUFFER_TRACE(bh, "get_write_access");
+			err = ext4_journal_get_write_access(handle, bh);
+			if (err)
+				return err;
+#else
 			BUFFER_TRACE(bh, "get_write_access");
 			ext4_journal_get_write_access(handle, bh);
+#endif
 			if (pde)
 				pde->rec_len = ext4_rec_len_to_disk(
 					ext4_rec_len_from_disk(pde->rec_len,
@@ -1826,7 +1835,20 @@ retry:
 	if (!dir_block)
 		goto out_clear_inode;
 	BUFFER_TRACE(dir_block, "get_write_access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	err = ext4_journal_get_write_access(handle, dir_block);
+	if (err) {
+		drop_nlink(inode); /* is this nlink == 0? */
+		unlock_new_inode(inode);
+		/* no need to check for errors - we failed anyway */
+		(void) ext4_mark_inode_dirty(handle, inode);
+		iput(inode);
+		brelse(dir_block);
+		goto out_stop;
+	}
+#else
 	ext4_journal_get_write_access(handle, dir_block);
+#endif
 	de = (struct ext4_dir_entry_2 *) dir_block->b_data;
 	de->inode = cpu_to_le32(inode->i_ino);
 	de->name_len = 1;
@@ -2404,6 +2426,12 @@ static int ext4_rename(struct inode *old_dir, struct dentry *old_dentry,
 		if (!new_inode && new_dir != old_dir &&
 		    EXT4_DIR_LINK_MAX(new_dir))
 			goto end_rename;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+		BUFFER_TRACE(dir_bh, "get_write_access");
+		retval = ext4_journal_get_write_access(handle, dir_bh);
+		if (retval)
+			goto end_rename;
+#endif
 	}
 	if (!new_bh) {
 		retval = ext4_add_entry(handle, new_dentry, old_inode);
@@ -2411,7 +2439,13 @@ static int ext4_rename(struct inode *old_dir, struct dentry *old_dentry,
 			goto end_rename;
 	} else {
 		BUFFER_TRACE(new_bh, "get write access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+		retval = ext4_journal_get_write_access(handle, new_bh);
+		if (retval)
+			goto end_rename;
+#else
 		ext4_journal_get_write_access(handle, new_bh);
+#endif
 		new_de->inode = cpu_to_le32(old_inode->i_ino);
 		if (EXT4_HAS_INCOMPAT_FEATURE(new_dir->i_sb,
 					      EXT4_FEATURE_INCOMPAT_FILETYPE))
@@ -2468,8 +2502,10 @@ static int ext4_rename(struct inode *old_dir, struct dentry *old_dentry,
 	old_dir->i_ctime = old_dir->i_mtime = ext4_current_time(old_dir);
 	ext4_update_dx_flag(old_dir);
 	if (dir_bh) {
+#ifndef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
 		BUFFER_TRACE(dir_bh, "get_write_access");
 		ext4_journal_get_write_access(handle, dir_bh);
+#endif
 		PARENT_INO(dir_bh->b_data, new_dir->i_sb->s_blocksize) =
 						cpu_to_le32(new_dir->i_ino);
 		BUFFER_TRACE(dir_bh, "call ext4_handle_dirty_metadata");

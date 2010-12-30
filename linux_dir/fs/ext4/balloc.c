@@ -472,7 +472,13 @@ void ext4_add_groupblocks(handle_t *handle, struct super_block *sb,
 
 	/* We dirtied the bitmap block */
 	BUFFER_TRACE(bitmap_bh, "dirtied bitmap block");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_ERROR
+	ret = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
+	if (!err)
+		err = ret;
+#else
 	err = ext4_handle_dirty_metadata(handle, NULL, bitmap_bh);
+#endif
 
 	/* And the group descriptor block */
 	BUFFER_TRACE(gd_bh, "dirtied group descriptor block");
