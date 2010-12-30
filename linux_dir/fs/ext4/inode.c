@@ -5330,6 +5330,32 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 	 */
 	for (block = 0; block < EXT4_N_BLOCKS; block++)
 		ei->i_data[block] = raw_inode->i_block[block];
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
+	/* snapshot on-disk list is stored in snapshot inode on-disk version */
+	if (ext4_snapshot_file(inode)) {
+		ei->i_next_snapshot_ino =
+			le32_to_cpu(raw_inode->i_disk_version);
+
+		/*
+		 * Dynamic snapshot flags are not stored on-disk, so
+		 * at this point, we only know that this inode has the
+		 * 'snapfile' flag, but we don't know if it is on the list.
+		 * snapshot_load() loads the on-disk snapshot list to memory
+		 * and snapshot_update() flags the snapshots on the list.
+		 * 'detached' snapshot files will not be accessible to user.
+		 * 'detached' snapshot files are a by-product of detaching the
+		 * on-disk snapshot list head with tune2fs -O ^has_snapshot.
+		 */
+		ei->i_flags &= ~EXT4_FL_SNAPSHOT_DYN_MASK;
+		/*
+		 * snapshot volume size is stored in i_disksize.
+		 * in-memory i_size of snapshot files is set to 0 (disabled).
+		 * enabling a snapshot is setting i_size to i_disksize.
+		 */
+		SNAPSHOT_SET_DISABLED(inode);
+	}
+
+#endif
 	INIT_LIST_HEAD(&ei->i_orphan);
 
 	/*
@@ -5594,6 +5620,10 @@ static int ext4_do_update_inode(handle_t *handle,
 		for (block = 0; block < EXT4_N_BLOCKS; block++)
 			raw_inode->i_block[block] = ei->i_data[block];
 
+	/*
+	 * snapshot on-disk list overrides snapshot inode on-disk version
+	 * snapshot files are not writable so do not need a persistent version
+	 */
 	raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
 	if (ei->i_extra_isize) {
 		if (EXT4_FITS_IN_INODE(raw_inode, ei, i_version_hi))
@@ -5601,6 +5631,17 @@ static int ext4_do_update_inode(handle_t *handle,
 			cpu_to_le32(inode->i_version >> 32);
 		raw_inode->i_extra_isize = cpu_to_le16(ei->i_extra_isize);
 	}
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_STORE
+	if (ext4_snapshot_file(inode)) {
+		raw_inode->i_disk_version =
+			cpu_to_le32(ei->i_next_snapshot_ino);
+		/* dynamic snapshot flags are not stored on-disk */
+		raw_inode->i_flags &= cpu_to_le32(~EXT4_FL_SNAPSHOT_DYN_MASK);
+	} else
+		raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
+#else
+	raw_inode->i_disk_version = cpu_to_le32(inode->i_version);
+#endif
 
 	BUFFER_TRACE(bh, "call ext4_handle_dirty_metadata");
 	rc = ext4_handle_dirty_metadata(handle, NULL, bh);

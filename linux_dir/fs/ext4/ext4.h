@@ -680,6 +680,7 @@ struct ext4_inode {
 		struct {
 			__le32  l_i_version;
 		} linux1;
+
 		struct {
 			__u32  h_i_translator;
 		} hurd1;

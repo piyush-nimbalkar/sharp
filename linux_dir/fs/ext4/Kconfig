@@ -153,3 +153,12 @@ config EXT4_FS_SNAPSHOT_FILE_PERM
 	help
 	  Enforce snapshot file permissions.
 	  Write, truncate and unlink of snapshot inodes is not allowed.
+
+config EXT4_FS_SNAPSHOT_FILE_STORE
+	bool "snapshot file - store on disk"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Snapshot inode is stored differently in memory and on disk.
+	  During store and load of snapshot inode, some of the inode flags
+	  and fields are converted.
