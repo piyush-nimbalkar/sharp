@@ -108,3 +108,12 @@ config EXT4_FS_SNAPSHOT_HOOKS_JBD
 	  namely, one of the ext4_journal_get_XXX_access() functions.
 	  We use these journal hooks to call the snapshot API,
 	  before every meta data buffer write.
+
+config EXT4_FS_SNAPSHOT_HOOKS_DELETE
+	bool "snapshot hooks - delete blocks"
+	depends on EXT4_FS_SNAPSHOT
+	default y
+	help
+	  Before deleting file blocks in ext4_free_blocks(),
+	  we call the snapshot API snapshot_get_delete_access(),
+	  to optionally move the block to the snapshot file.
