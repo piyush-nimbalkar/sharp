@@ -106,6 +106,50 @@ BUFFER_FNS(Partial_Write, partial_write)
 #endif
 
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
+/*
+ * snapshot_map_blocks() command flags passed to get_blocks_handle() on its
+ * @create argument.  All places in original code call get_blocks_handle()
+ * with @create 0 or 1.  The behavior of the function remains the same for
+ * these 2 values, while higher bits are used for mapping snapshot blocks.
+ */
+/* original meaning - only check if blocks are mapped */
+#define SNAPMAP_READ	0
+/* original meaning - allocate missing blocks and indirect blocks */
+#define SNAPMAP_WRITE	0x1
+/* creating COWed block - handle COW race conditions */
+#define SNAPMAP_COW	0x2
+/* moving blocks to snapshot - allocate only indirect blocks */
+#define SNAPMAP_MOVE	0x4
+/* bypass journal and sync allocated indirect blocks directly to disk */
+#define SNAPMAP_SYNC	0x8
+/* creating COW bitmap - handle COW races and bypass journal */
+#define SNAPMAP_BITMAP	(SNAPMAP_COW|SNAPMAP_SYNC)
+
+/* original @create flag test - only check map or create map? */
+#define SNAPMAP_ISREAD(cmd)	((cmd) == SNAPMAP_READ)
+#define SNAPMAP_ISWRITE(cmd)	((cmd) == SNAPMAP_WRITE)
+#define SNAPMAP_ISCREATE(cmd)	((cmd) != SNAPMAP_READ)
+/* test special cases when mapping snapshot blocks */
+#define SNAPMAP_ISSPECIAL(cmd)	((cmd) & ~SNAPMAP_WRITE)
+#define SNAPMAP_ISCOW(cmd)	((cmd) & SNAPMAP_COW)
+#define SNAPMAP_ISMOVE(cmd)	((cmd) & SNAPMAP_MOVE)
+#define SNAPMAP_ISSYNC(cmd)	((cmd) & SNAPMAP_SYNC)
+
+/* helper functions for ext4_snapshot_create() */
+extern int ext4_snapshot_map_blocks(handle_t *handle, struct inode *inode,
+				     ext4_snapblk_t block,
+				     unsigned long maxblocks,
+				     ext4_fsblk_t *mapped, int cmd);
+/* helper function for ext4_snapshot_take() */
+extern void ext4_snapshot_copy_buffer(struct buffer_head *sbh,
+					   struct buffer_head *bh,
+					   const char *mask);
+/* helper function for ext4_snapshot_get_block() */
+extern int ext4_snapshot_read_block_bitmap(struct super_block *sb,
+		unsigned int block_group, struct buffer_head *bitmap_bh);
+
+#endif
 #define ext4_snapshot_cow(handle, inode, bh, cow) 0
 
 #define ext4_snapshot_move(handle, inode, block, num, move) (num)

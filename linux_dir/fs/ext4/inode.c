@@ -326,6 +326,7 @@ static int ext4_block_to_path(struct inode *inode,
 		double_blocks = (1 << (ptrs_bits * 2));
 	int n = 0;
 	int final = 0;
+
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
 	int tind;
 #endif
@@ -964,6 +965,14 @@ err_out:
  * down_read(&EXT4_I(inode)->i_data_sem) if not allocating file system
  * blocks.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
+/*
+ * snapshot_map_blocks() command flags are passed to get_blocks_handle() on its
+ * @create argument.  All places in original code call get_blocks_handle()
+ * with @create 0 or 1.  The behavior of the function remains the same for
+ * these 2 values, while higher bits are used for mapping snapshot blocks.
+ */
+#endif
 static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 			       struct ext4_map_blocks *map,
 			       int flags)

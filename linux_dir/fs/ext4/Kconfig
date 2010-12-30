@@ -184,3 +184,15 @@ config EXT4_FS_SNAPSHOT_FILE_OLD
 	  Snapshot flags and super block field positions have changed.
 	  When old has_snapshot flag is set, copy fields to new position,
 	  clear old flags and fields and set new flags on mount time.
+
+config EXT4_FS_SNAPSHOT_BLOCK
+	bool "snapshot block operations"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Core implementation of special snapshot file block operations.
+	  The argument @create to the function ext4_get_blocks_handle()
+	  is re-interpreted as a snapshot block command argument.  The old
+	  argument values 0(=read) and 1(=create) preserve the original
+	  behavior of the function.  The bit field h_cowing in the current
+	  transaction handle is used to prevent COW recursions.
