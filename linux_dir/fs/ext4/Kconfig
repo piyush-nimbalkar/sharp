@@ -256,6 +256,20 @@ config EXT4_FS_SNAPSHOT_JOURNAL_RELEASE
 	  credits too soon.
 
 
+config EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
+	bool "snapshot journaled - bypass to save credits"
+	depends on EXT4_FS_SNAPSHOT_JOURNAL
+	default y
+	help
+	  Don't journal COW bitmap indirect blocks to save journal credits.
+	  On very few COW operations (i.e., first block group access after
+	  snapshot take), there may be up to 3 extra blocks allocated for the
+	  active snapshot (i.e., COW bitmap block and up to 2 indirect blocks).
+	  Taking these 3 extra allocations into account on every COW operation
+	  would further increase the transaction's COW credits factor.
+	  Instead, we choose to pay a small performance penalty on these few
+	  COW bitmap operations and wait until they are synced to disk.
+
 config EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	bool "snapshot block operation - move blocks to snapshot"
 	depends on EXT4_FS_SNAPSHOT_BLOCK

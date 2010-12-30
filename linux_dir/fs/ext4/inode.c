@@ -830,7 +830,12 @@ static int ext4_alloc_branch(handle_t *handle, struct inode *inode,
 		branch[n].bh = bh;
 		lock_buffer(bh);
 		BUFFER_TRACE(bh, "call get_create_access");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
+		if (!SNAPMAP_ISSYNC(cmd))
+			err = ext4_journal_get_create_access(handle, bh);
+#else
 		err = ext4_journal_get_create_access(handle, bh);
+#endif
 		if (err) {
 			/* Don't brelse(bh) here; it's done in
 			 * ext4_journal_forget() below */
@@ -857,7 +862,25 @@ static int ext4_alloc_branch(handle_t *handle, struct inode *inode,
 		unlock_buffer(bh);
 
 		BUFFER_TRACE(bh, "call ext4_handle_dirty_metadata");
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
+		/*
+		 * When accessing a block group for the first time, the
+		 * block bitmap is the first block to be copied to the
+		 * snapshot.  We don't want to reserve journal credits for
+		 * the indirect blocks that map the bitmap copy (the COW
+		 * bitmap), so instead of writing through the journal, we
+		 * sync the indirect blocks directly to disk.  Of course,
+		 * this is not good for performance but it only happens once
+		 * per snapshot/blockgroup.
+		 */
+		if (SNAPMAP_ISSYNC(cmd)) {
+			mark_buffer_dirty(bh);
+			sync_dirty_buffer(bh);
+		} else
 		err = ext4_handle_dirty_metadata(handle, inode, bh);
+#else
+		err = ext4_handle_dirty_metadata(handle, inode, bh);
+#endif
 		if (err)
 			goto failed;
 	}
@@ -872,8 +895,15 @@ failed:
 		 * need to revoke the block, which is why we don't
 		 * need to set EXT4_FREE_BLOCKS_METADATA.
 		 */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
+		if (!SNAPMAP_ISSYNC(cmd))
+			/* no need to check for errors - we failed anyway */
+			(void)ext4_free_blocks(handle, inode, 0, new_blocks[i],
+					 1, EXT4_FREE_BLOCKS_FORGET);
+#else
 		ext4_free_blocks(handle, inode, 0, new_blocks[i], 1,
 				 EXT4_FREE_BLOCKS_FORGET);
+#endif
 	}
 	for (i = n+1; i < indirect_blks; i++)
 		ext4_free_blocks(handle, inode, 0, new_blocks[i], 1, 0);
@@ -985,8 +1015,15 @@ err_out:
 		 * need to revoke the block, which is why we don't
 		 * need to set EXT4_FREE_BLOCKS_METADATA.
 		 */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_JOURNAL_BYPASS
+		if (!SNAPMAP_ISSYNC(cmd))
+			/* no need to check for errors - we failed anyway */
+			(void) ext4_free_blocks(handle, inode, where[i].bh, 0,
+					 1, EXT4_FREE_BLOCKS_FORGET);
+#else
 		ext4_free_blocks(handle, inode, where[i].bh, 0, 1,
 				 EXT4_FREE_BLOCKS_FORGET);
+#endif
 	}
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
 	if (SNAPMAP_ISMOVE(cmd))
