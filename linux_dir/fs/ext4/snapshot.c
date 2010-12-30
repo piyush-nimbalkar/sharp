@@ -73,12 +73,55 @@ int ext4_snapshot_map_blocks(handle_t *handle, struct inode *inode,
  * in which case 'prev_snapshot' is pointed to the previous snapshot
  * on the list or set to NULL to indicate read through to block device.
  */
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+/*
+ * In-memory snapshot list manipulation is protected by snapshot_mutex.
+ * In this function we read the in-memory snapshot list without holding
+ * snapshot_mutex, because we don't want to slow down snapshot read performance.
+ * Following is a proof, that even though we don't hold snapshot_mutex here,
+ * reading the list is safe from races with snapshot list delete and add (take).
+ *
+ * Proof of no race with snapshot delete:
+ * --------------------------------------
+ * We get here only when reading from an enabled snapshot or when reading
+ * through from an enabled snapshot to a newer snapshot.  Snapshot delete
+ * operation is only allowed for a disabled snapshot, when no older enabled
+ * snapshot exists (i.e., the deleted snapshot in not 'in-use').  Hence,
+ * read through is safe from races with snapshot list delete operations.
+ *
+ * Proof of no race with snapshot take:
+ * ------------------------------------
+ * Snapshot B take is composed of the following steps:
+ * - Add snapshot B to head of list (active_snapshot is A).
+ * - Allocate and copy snapshot B initial blocks.
+ * - Clear snapshot A 'active' flag.
+ * - Set snapshot B 'list' and 'active' flags.
+ * - Set snapshot B as active snapshot (active_snapshot=B).
+ *
+ * When reading from snapshot A during snapshot B take, we have 2 cases:
+ * 1. is_active(A) is tested before setting active_snapshot=B -
+ *    read through from A to block device.
+ * 2. is_active(A) is tested after setting active_snapshot=B -
+ *    read through from A to B.
+ *
+ * When reading from snapshot B during snapshot B take, we have 3 cases:
+ * 1. B->flags and B->prev are read before adding B to list -
+ *    access to B denied.
+ * 2. B->flags is read before setting the 'list' and 'active' flags -
+ *    normal file access to B.
+ * 3. B->flags is read after setting the 'list' and 'active' flags -
+ *    read through from B to block device.
+ */
+#endif
 int ext4_snapshot_get_inode_access(handle_t *handle, struct inode *inode,
 		ext4_fsblk_t iblock, int count, int cmd,
 		struct inode **prev_snapshot)
 {
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	unsigned int flags = ei->i_flags;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+	struct list_head *prev = ei->i_snaplist.prev;
+#endif
 #ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK
 #ifdef CONFIG_EXT4_FS_DEBUG
 	ext4_fsblk_t block = SNAPSHOT_BLOCK(iblock);
@@ -104,7 +147,15 @@ int ext4_snapshot_get_inode_access(handle_t *handle, struct inode *inode,
 #endif
 
 	if (!(flags & EXT4_SNAPFILE_LIST_FL))
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+		if (prev && prev == &EXT4_SB(inode->i_sb)->s_snapshot_list)
+			/* normal access to snapshot being taken */
+			return 0;
+		/* snapshot not on the list - read/write access denied */
+		return -EPERM;
+#else
 		return 0;
+#endif
 
 	if (cmd) {
 		/* snapshot inode write access */
@@ -131,7 +182,32 @@ int ext4_snapshot_get_inode_access(handle_t *handle, struct inode *inode,
 	 * calling ext4_snapshot_get_block()
 	 */
 	*prev_snapshot = NULL;
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+	if (ext4_snapshot_is_active(inode) ||
+			(flags & EXT4_SNAPFILE_ACTIVE_FL))
+		/* read through from active snapshot to block device */
+		return 1;
+
+	if (list_empty(prev))
+		/* not on snapshots list? */
+		return -EIO;
+
+	if (prev == &EXT4_SB(inode->i_sb)->s_snapshot_list)
+		/* active snapshot not found on list? */
+		return -EIO;
+
+	/* read through to prev snapshot on the list */
+	ei = list_entry(prev, struct ext4_inode_info, i_snaplist);
+	*prev_snapshot = &ei->vfs_inode;
+
+	if (!ext4_snapshot_file(*prev_snapshot))
+		/* non snapshot file on the list? */
+		return -EIO;
+
+	return 1;
+#else
 	return ext4_snapshot_is_active(inode) ? 1 : 0;
+#endif
 }
 #endif
 

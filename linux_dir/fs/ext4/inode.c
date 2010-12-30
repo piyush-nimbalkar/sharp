@@ -1093,6 +1093,12 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	int read_through = 0;
 	struct inode *prev_snapshot;
 
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+retry:
+	blocks_to_boundary = 0;
+	count = 0;
+	prev_snapshot = NULL;
+#endif
 	/* read through expected only to snapshot file */
 	BUG_ON(read_through && !ext4_snapshot_file(inode));
 	if (ext4_snapshot_file(inode))
@@ -1163,6 +1169,17 @@ static int ext4_ind_map_blocks(handle_t *handle, struct inode *inode,
 	 * is filled forever.
 	 */
 	if (read_through && !err) {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_LIST_READ
+		if (prev_snapshot) {
+			while (partial > chain) {
+				brelse(partial->bh);
+				partial--;
+			}
+			/* repeat the same routine with prev snapshot */
+			inode = prev_snapshot;
+			goto retry;
+		}
+#endif
 		if (ext4_snapshot_is_active(inode)) {
 			/* active snapshot - read though holes to block
 			 * device */

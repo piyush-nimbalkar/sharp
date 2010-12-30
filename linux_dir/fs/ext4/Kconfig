@@ -305,6 +305,18 @@ config EXT4_FS_SNAPSHOT_LIST
 	  ext4_inode_info.i_orphan for the chaining of snapshots.
 
 
+config EXT4_FS_SNAPSHOT_LIST_READ
+	bool "snapshot list - read through to previous snapshot"
+	depends on EXT4_FS_SNAPSHOT_LIST
+	default y
+	help
+	  On snapshot page read, the function ext4_get_block() is called
+	  to map the page to a disk block.  If the page is not mapped in the
+	  snapshot file, the newer snapshots on the list are checked and the
+	  oldest found mapping is returned.  If the page is not mapped in any of
+	  the newer snapshots, a direct mapping to the block device is returned.
+
+
 config EXT4_FS_SNAPSHOT_CTL_INIT
 	bool "snapshot control - init new snapshot"
 	depends on EXT4_FS_SNAPSHOT_CTL
