@@ -162,3 +162,16 @@ config EXT4_FS_SNAPSHOT_FILE_STORE
 	  Snapshot inode is stored differently in memory and on disk.
 	  During store and load of snapshot inode, some of the inode flags
 	  and fields are converted.
+
+config EXT4_FS_SNAPSHOT_FILE_HUGE
+	bool "snapshot file - increase maximum file size limit to 16TB"
+	depends on EXT4_FS_SNAPSHOT_FILE
+	default y
+	help
+	  Files larger than 2TB use Ext4 huge_file flag to store i_blocks
+	  in file system blocks units, so the upper limit on snapshot actual
+	  size is increased from 512*2^32 = 2TB to 4K*2^32 = 16TB,
+	  which is also the upper limit on file system size.
+	  To map 2^32 logical blocks, 4 triple indirect blocks are used instead
+	  of just one.  The extra 3 triple indirect blocks are stored in-place
+	  of direct blocks, which are not in use by snapshot files.

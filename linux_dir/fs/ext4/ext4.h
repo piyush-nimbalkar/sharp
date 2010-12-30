@@ -344,6 +344,21 @@ struct flex_groups {
 #define	EXT4_DIND_BLOCK			(EXT4_IND_BLOCK + 1)
 #define	EXT4_TIND_BLOCK			(EXT4_DIND_BLOCK + 1)
 #define	EXT4_N_BLOCKS			(EXT4_TIND_BLOCK + 1)
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
+/*
+ * Snapshot files have different indirection mapping that can map up to 2^32
+ * logical blocks, so they can cover the mapped filesystem block address space.
+ * Ext4 must use either 4K or 8K blocks (depending on PAGE_SIZE).
+ * With 8K blocks, 1 triple indirect block maps 2^33 logical blocks.
+ * With 4K blocks (the system default), each triple indirect block maps 2^30
+ * logical blocks, so 4 triple indirect blocks map 2^32 logical blocks.
+ * Snapshot files in small filesystems (<= 4G), use only 1 double indirect
+ * block to map the entire filesystem.
+ */
+#define	EXT4_SNAPSHOT_NTIND_BLOCKS	4
+#define	EXT4_SNAPSHOT_N_BLOCKS		(EXT4_TIND_BLOCK + \
+					 EXT4_SNAPSHOT_NTIND_BLOCKS)
+#endif
 
 /*
  * Inode flags
@@ -844,7 +859,11 @@ struct ext4_ext_cache {
  * fourth extended file system inode data in memory
  */
 struct ext4_inode_info {
+#ifdef CONFIG_EXT4_FS_SNAPSHOT_FILE_HUGE
+	__le32	i_data[EXT4_SNAPSHOT_N_BLOCKS]; /* unconverted */
+#else
 	__le32	i_data[15];	/* unconverted */
+#endif
 	__u32	i_dtime;
 	ext4_fsblk_t	i_file_acl;
 
