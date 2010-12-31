@@ -39,7 +39,7 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 ===================================================================
 --- linux-2.6.37.1.x.orig/fs/ext4/snapshot.c	2010-11-27 17:07:11.000000000 +0530
 +++ linux-2.6.37.1.x/fs/ext4/snapshot.c	2010-11-27 18:14:47.000000000 +0530
-@@ -133,3 +133,283 @@
+@@ -133,3 +133,277 @@
  }
  #endif
  
@@ -58,7 +58,6 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	memcpy(sbh->b_data, bh->b_data, SNAPSHOT_BLOCK_SIZE);
 +	set_buffer_uptodate(sbh);
 +}
-+
 +
 +/*
 + * ext4_snapshot_complete_cow()
@@ -121,9 +120,6 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +	sync_dirty_buffer(sbh);
 +}
 +
-+
-+
-+
 +/*
 + * COW functions
 + */
@@ -158,7 +154,6 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +#else
 +#define ext4_snapshot_trace_cow(where, handle, sb, inode, bh, block, cmd)
 +#endif
-+
 +
 +/*
 + * Begin COW or move operation.
@@ -226,7 +221,6 @@ Index: linux-2.6.37.1.x/fs/ext4/snapshot.c
 +		snapshot_debug_hl(4, "active snapshot access denied!\n");
 +		return -EPERM;
 +	}
-+
 +
 +	/* BEGIN COWing */
 +	ext4_snapshot_cow_begin(handle);

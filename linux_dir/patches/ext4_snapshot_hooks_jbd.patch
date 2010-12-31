@@ -76,7 +76,7 @@ Index: backup/fs/ext4/snapshot.h
 ===================================================================
 --- backup.orig/fs/ext4/snapshot.h	2010-12-02 11:05:44.000000000 +0530
 +++ backup/fs/ext4/snapshot.h	2010-12-02 11:07:15.000000000 +0530
-@@ -107,6 +107,58 @@
+@@ -107,6 +107,57 @@
   * Block access functions
   */
  
@@ -130,7 +130,6 @@ Index: backup/fs/ext4/snapshot.h
 +	 */
 +	return ext4_snapshot_cow(handle, NULL, bh, 0);
 +}
-+
 +#endif
  
  /*
@@ -150,7 +149,7 @@ Index: backup/fs/ext4/ext4_jbd2.c
  		if (err)
  			ext4_journal_abort_handle(where, line, __func__, bh,
  						  handle, err);
-@@ -24,13 +28,24 @@
+@@ -24,13 +28,23 @@
  	return err;
  }
  
@@ -159,7 +158,6 @@ Index: backup/fs/ext4/ext4_jbd2.c
 +					 handle_t *handle, struct inode *inode,
 +					 struct buffer_head *bh)
 +#else
-+
  int __ext4_journal_get_write_access(const char *where, unsigned int line,
  				    handle_t *handle, struct buffer_head *bh)
 +#endif
@@ -190,15 +188,7 @@ Index: backup/fs/ext4/ext4_jbd2.h
 ===================================================================
 --- backup.orig/fs/ext4/ext4_jbd2.h	2010-12-02 11:05:44.000000000 +0530
 +++ backup/fs/ext4/ext4_jbd2.h	2010-12-02 11:15:36.000000000 +0530
-@@ -104,6 +104,7 @@
- #define EXT4_QUOTA_INIT_BLOCKS(sb) 0
- #define EXT4_QUOTA_DEL_BLOCKS(sb) 0
- #endif
-+
- #define EXT4_MAXQUOTAS_TRANS_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_TRANS_BLOCKS(sb))
- #define EXT4_MAXQUOTAS_INIT_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_INIT_BLOCKS(sb))
- #define EXT4_MAXQUOTAS_DEL_BLOCKS(sb) (MAXQUOTAS*EXT4_QUOTA_DEL_BLOCKS(sb))
-@@ -133,9 +134,17 @@
+@@ -133,9 +134,16 @@
  int __ext4_journal_get_undo_access(const char *where, unsigned int line,
  				   handle_t *handle, struct buffer_head *bh);
  
@@ -207,7 +197,6 @@ Index: backup/fs/ext4/ext4_jbd2.h
 +					 handle_t *handle, struct inode *inode,
 +					 struct buffer_head *bh);
 +#else
-+
  int __ext4_journal_get_write_access(const char *where, unsigned int line,
  				    handle_t *handle, struct buffer_head *bh);
  

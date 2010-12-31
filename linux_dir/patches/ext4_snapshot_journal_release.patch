@@ -22,7 +22,7 @@ Index: linux_dir/fs/ext4/Kconfig
 ===================================================================
 --- linux_dir.orig/fs/ext4/Kconfig	2010-12-29 21:46:55.000000000 +0530
 +++ linux_dir/fs/ext4/Kconfig	2010-12-29 21:57:56.000000000 +0530
-@@ -241,6 +241,21 @@
+@@ -241,6 +241,20 @@
  	  that enough buffer credits are reserved in the running transaction.
  
  
@@ -39,7 +39,6 @@ Index: linux_dir/fs/ext4/Kconfig
 +	  we try to extend the current transaction to compensate for the used
 +	  credits of the extra COW operation, so we don't run out of buffer
 +	  credits too soon.
-+
 +
  config EXT4_FS_SNAPSHOT_BLOCK_MOVE
  	bool "snapshot block operation - move blocks to snapshot"
@@ -66,7 +65,7 @@ Index: linux_dir/fs/ext4/ext4_jbd2.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/ext4_jbd2.c	2010-12-29 21:51:21.000000000 +0530
 +++ linux_dir/fs/ext4/ext4_jbd2.c	2010-12-29 21:57:56.000000000 +0530
-@@ -137,6 +137,41 @@
+@@ -137,6 +137,40 @@
  	return err;
  }
  
@@ -103,7 +102,6 @@ Index: linux_dir/fs/ext4/ext4_jbd2.c
 +}
 +
 +#endif
-+
 +
  int __ext4_handle_dirty_metadata(const char *where, unsigned int line,
  				 handle_t *handle, struct inode *inode,

@@ -2,13 +2,6 @@ Index: linux_dir/fs/ext4/inode.c
 ===================================================================
 --- linux_dir.orig/fs/ext4/inode.c	2010-12-30 00:20:35.000000000 +0530
 +++ linux_dir/fs/ext4/inode.c	2010-12-30 00:37:06.000000000 +0530
-@@ -1,5 +1,5 @@
- /*
-- *  linux/fs/ext4/inode.c
-+ *  Linux/fs/ext4/inode.c
-  *
-  * Copyright (C) 1992, 1993, 1994, 1995
-  * Remy Card (card@masi.ibp.fr)
 @@ -663,6 +663,13 @@
  			new_blocks[index++] = current_block++;
  			count--;
@@ -45,7 +38,6 @@ Index: linux_dir/fs/ext4/inode.c
  	int num;
  	ext4_fsblk_t new_blocks[4];
  	ext4_fsblk_t current_block;
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
 +	if (SNAPMAP_ISMOVE(cmd)) {
 +		/* mapping snapshot block to block device block */
@@ -74,7 +66,6 @@ Index: linux_dir/fs/ext4/inode.c
  	}
  	for (i = n+1; i < indirect_blks; i++)
  		ext4_free_blocks(handle, inode, 0, new_blocks[i], 1, 0);
--
 +#ifdef CONFIG_EXT4_FS_SNAPSHOT_BLOCK_MOVE
 +	if (SNAPMAP_ISMOVE(cmd) && num > 0)
 +		/* don't charge snapshot file owner if move failed */
@@ -83,7 +74,6 @@ Index: linux_dir/fs/ext4/inode.c
 +		ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
 +#else
  	ext4_free_blocks(handle, inode, 0, new_blocks[i], num, 0);
--
 +#endif
  	return err;
  }
@@ -131,7 +121,6 @@ Index: linux_dir/fs/ext4/inode.c
 +#else
  	ext4_free_blocks(handle, inode, 0, le32_to_cpu(where[num].key),
  			 blks, 0);
--
 +#endif
  	return err;
  }

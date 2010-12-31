@@ -37,7 +37,7 @@ Index: linux_dir/fs/ext4/Kconfig
 ===================================================================
 --- linux_dir.orig/fs/ext4/Kconfig	2010-12-31 00:11:03.000000000 +0530
 +++ linux_dir/fs/ext4/Kconfig	2010-12-31 00:15:47.000000000 +0530
-@@ -305,6 +305,18 @@
+@@ -305,6 +305,17 @@
  	  ext4_inode_info.i_orphan for the chaining of snapshots.
  
  
@@ -51,7 +51,6 @@ Index: linux_dir/fs/ext4/Kconfig
 +	  snapshot file, the newer snapshots on the list are checked and the
 +	  oldest found mapping is returned.  If the page is not mapped in any of
 +	  the newer snapshots, a direct mapping to the block device is returned.
-+
 +
  config EXT4_FS_SNAPSHOT_CTL_INIT
  	bool "snapshot control - init new snapshot"
