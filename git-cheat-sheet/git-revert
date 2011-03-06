@@ -1,0 +1,64 @@
+#
+# Writen by Piyush Nimbalkar
+# Sharp-Dreamz Group
+#
+
+
+
+---------------------- Reverting back to old commits --------------------------
+
+The “revert” command basically reverses whatever changes made in the 
+commit passed in by creating a new commit. So, you wanted to revert 
+the last commit you just made on your current branch:
+
+$ git revert HEAD
+Finished one revert.
+[master 2f74048] Revert "Third commit"
+
+By default using this command will bring up your $EDITOR so you can 
+modify the commit message of the revert. Use this to explain why the 
+changes are being backed out! If for some reason you don’t want to 
+edit the commit message, tacking on --no-edit will allow you do so.
+
+Another helpful option is the -n or --no-commit flag. This will 
+simply leave the reverted changes in your working directory and 
+not automatically commit them.
+
+If you need to edit files further to complete the revert or possibly 
+revert more than one commit, try out this option.
+Dealing with reverting merges is somewhat irksome. You may receive 
+this message when trying to revert one:
+
+$ git revert HEAD~1
+fatal: Commit xxxxxxx is a merge but no -m option was given.
+
+With merges, you need to pick one of the merged in commits to revert. 
+By using the -m or --mainline option, you can pick out which commit 
+should be part of the ‘mainline’. This requires a number argument, 
+which is a bit misleading. Let’s look at the merge commit shown above:
+
+$ git log HEAD~1 -1
+commit c8f5e242a0d571d53f7ffb441aba7aa0e4e1539d
+Author: Piyush Nimbalkar <piyushmnimbalkar@gmail.com>
+Date:   Wed Nov 3 23:38:09 2010 +0530
+
+    Third commit
+
+Basically, if we do git revert HEAD~1 -m 1, you’ll get the first 
+commit in the merge reverted (5f576a9). Using -m 2 will revert the 
+second commit (62db4af). It’s just a matter of figuring out which 
+commit you need to roll back. The default commit message shows the 
+commit that was reverted as well.
+
+
+$ git revert HEAD~1 --no-edit --mainline 1
+commit 2f74048a7d309dec5d7e26276beae581efca2238
+Author: Piyush Nimbalkar <piyushmnimbalkar@gmail.com>
+Date:   Thu Nov 4 01:06:42 2010 +0530
+
+    Revert "third commit"
+    
+    This reverts commit c8f5e242a0d571d53f7ffb441aba7aa0e4e1539d.
+
+
+-------------------------------------------------------------------------------

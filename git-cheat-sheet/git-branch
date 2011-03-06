@@ -1,0 +1,204 @@
+#
+# Written by Piyush Nimbalkar
+# Sharp-Dreamz Group
+#
+
+----------------------- BRANCHING BASICS ------------------------
+
+
+First, we'll need a directory to experiment in.
+Let's call it "branching_basics":
+
+$ mkdir branching_basics
+$ cd branching_basics
+We need a file with a line of text in it. I create one like so:
+
+$ echo "I am a line that ends in foo." > testfile
+Now, let's initialize a new Git repository.
+
+$ git init
+Initialized empty Git repository in .git/
+
+# The "." after 'add' command indicates all files in the directory
+$ git add .       
+
+$ git commit -a -m "initial commit"
+Created initial commit 08ecadb: initial commit
+1 files changed, 1 insertions(+), 0 deletions(-)
+create mode 100644 testfile
+
+Three simple commands, and we have our new repository.
+
+In Git, the default branch is the master branch. So, right from the 
+very beginning of our brand new repository we're in a branch.
+
+Let's look at a few ways of determining which branch is active.
+
+One way is to use the git-branch command, like so:
+
+$ git branch
+* master
+
+So far, we only have one branch--the master branch--so the command lists 
+just one branch. When we have more branches (as we will in a few moments), 
+it will list all the branches. The active branch is indicated by the *
+
+Another way to see which branch we're in is via the git-status command:
+
+$ git status
+# On branch master
+nothing to commit (working directory clean)
+See the line that says "# On branch master"? 
+Well, that's where you are; on the branch called "master."
+
+Now, it's really time to branch, so let's do it.
+
+$ git branch test
+There's more than one way to create a new branch, but this is perhaps the 
+simplest. The "test" at the end of the command is the name of our new branch.
+
+Let's see our new branch in the list of branches:
+
+$ git branch
+* master
+  test
+
+Notice that it doesn't have a * next to it. Master is still the currently 
+active branch. 
+
+We're created the test branch, but we haven't switched to it yet.
+The git-checkout command switches branches. Let's try using it to switch 
+to the test branch, then view our list of branches again with git-branch:
+
+$ git checkout test
+Switched to branch "test"
+$ git branch
+  master
+* test
+
+Notice that test is now active. You can use git-checkout to switch back and 
+forth between branches, but since--as we discussed in the last section--git 
+transforms the files in the sole working tree whenever you switch branches, 
+and since our testfile contains the same string in both branches, 
+this isn't very interesting yet.
+
+Let's make it more interesting by changing the contents of testfile in one 
+of the branches. Go ahead and use git-checkout to switch to the test branch 
+
+Got it? Great. Let's edit the file. Use your favorite text editor 
+(eg. emacs or vim) to open the file. Add a second line of text. 
+Whatever you like. If you don't feel like editing, 
+you can add a second line like so:
+
+$ echo "I am another line of text." >> testfile 
+(Note that there are two >'s in the command above. 
+In UNIX, that means "append STDIN to the file")
+
+Now, commit your changes:
+
+$ git commit -a -m "Added a second sentence."
+Created commit de87f1f: Added a second sentence.
+ 1 files changed, 1 insertions(+), 0 deletions(-)
+Switch back to the master branch and cat the file:
+
+$ git checkout master
+Switched to branch "master"
+$ cat testfile 
+I am a line that ends in foo.
+
+Ah ha! No second line! Now, let's see if our second line is still 
+in the test branch:
+
+$ git checkout test
+Switched to branch "test"
+$ cat testfile 
+I am a line that ends in foo.
+I am another line of text.
+
+Perfect!
+
+Now, again, this is an extremely simple example. I invite you to use your 
+imagination to picture how handy even simple branching like this will be 
+when you're dealing not with a single file but with multiple files in multiple 
+subdirectories for your complex software engineering projects. If you want to,
+say, try out an experimental feature, you can easily create a branch, 
+go crazy with your experiment, and not worry at all that you might be harming 
+the version in master. And when you're done, if you like what you created, 
+you can easily merge the experimental branch back into the master branch.
+
+
+----------------------- SOME BRANCHING COMMANDS -----------------------------
+
+
+$ git branch
+  list all local branches
+
+$ git branch -r
+  list all remote branches
+
+$ git branch -a
+  list all local and remote branches
+
+$ git branch <branch>
+  create a new branch named <branch>, referencing the same point in history as
+  the current branch
+
+$ git branch <branch> <start-point>
+  create a new branch named <branch>, referencing <start-point>, which may be
+  specified any way you like, including using a branch name or a tag name
+
+$ git push <repo> <start-point>:refs/heads/<branch>
+  create a new remote branch named <branch>, referencing <start-point> on the
+  remote.
+  Example: git push origin origin:refs/heads/branch-1
+  Example: git push origin origin/branch-1:refs/heads/branch-2
+
+$ git branch --track <branch> <remote-branch>
+  create a tracking branch. Will push/pull changes to/from another repository.
+  Example: git branch --track experimental origin/experimental
+
+$ git branch -d <branch>
+  delete the branch <branch>; if the branch you are deleting points to a 
+  commit which is not reachable from the current branch, this command 
+  will fail with a warning.
+
+$ git branch -r -d <remote-branch>
+  delete a remote-tracking branch.
+  Example: git branch -r -d wycats/master
+
+$ git push origin :<branch>
+  deleting a remote branch
+
+$ git branch -D <branch>
+  even if the branch points to a commit not reachable from the current branch,
+  you may know that that commit is still reachable from some other branch or
+  tag. In that case it is safe to use this command to force git to delete the
+  branch.
+
+$ git checkout <branch>
+  make the current branch <branch>, updating the working directory to reflect
+  the version referenced by <branch>
+
+$ git checkout -b <new> <start-point>
+  create a new branch <new> referencing <start-point>, and check it out.
+
+$ git push <repository> :<branch>
+  removes a branch from a remote repository.
+  Example: git push origin :old_branch_to_be_deleted
+
+$ git co <branch> <path to new file>
+  Checkout a file from another branch and add it to this branch. File
+  will still need to be added to the git branch, but it's present.
+  Eg. git co remote_at_origin__tick702_antifraud_blocking
+  ..../...nt_elements_for_iframe_blocked_page.rb
+ 
+$ git show <branch> -- <path to file that does not exist>
+  Eg. git show remote_tick702 -- path/to/fubar.txt
+  show the contents of a file that was created on another branch and that 
+  does not exist on the current branch.
+
+$ git show <rev>:<repo path to file>
+  Show the contents of a file at the specific revision. Note: path has to be
+  absolute within the repo.
+
+
