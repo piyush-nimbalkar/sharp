@@ -1,0 +1,80 @@
+#
+# Written by Piyush Nimbalkar
+# Sharp-Dreamz Group
+#
+
+
+########## GIT ADD ##########
+
+
+===> BAD PRACTICE
+
+$ git add .
+
+The above command adds everything, even untracked files,
+which you might not want to add in the current commit.
+Above can be used when you have loads of files (eg. the
+first commit when you add all the files at a time)
+
+
+===> GOOD PRACTICE
+
+$ git add filename
+
+OR
+
+$ git add -p
+
+Adds hunks of files inreactively to the staging area(index).
+As this adds hunk by hunk, we can review the changes made
+in corresponding files.
+
+
+########## GIT DIFF ##########
+
+
+===> PROBLEM
+
+With 'git diff', we cannot see changes made in the files if
+they are added to the index (done with 'git add').
+'git diff' gives a diff between the working directory and 
+the index.
+
+i.e. 	   Diff (working_directory, index)
+
+But after adding, the contents of index are same as of the
+working directory. So no changes or diff is seen.
+
+
+===> SOLUTION
+
+$ git diff --staged
+
+This gives a diff between last commit and the index.
+(i.e. staging area)
+
+i.e. 	   Diff (last_commit, index)
+
+
+########## GIT BRANCH ##########
+
+
+===> Bracnches are just pointers to commits !!
+
+
+===> Display the branches and also the commit they are 
+     pointing to.
+     
+     $ git branch -v
+
+
+===> Gives diff between two branches.
+
+     $ git diff branch_one branch_two
+
+
+
+
+
+NOTE: If you already know this, then ignore !!
+
